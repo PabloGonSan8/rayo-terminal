@@ -21,7 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked
       - run: cargo build --release
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           # Keep the asset name "rayo.exe": install.ps1, the in-app updater and the website
           # (download_count) all depend on it.
