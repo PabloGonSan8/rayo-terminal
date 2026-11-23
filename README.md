@@ -56,7 +56,7 @@ rayo -d C:\project   # same, Windows Terminal style
 ## Development
 
 - `cargo test` runs the tests.
-- CI (`.github/workflows/ci.yml`) runs the tests on Windows, Linux and macOS on every push/PR. Windows is blocking; Linux/macOS only report until the Unix port exists.
+- CI (`.github/workflows/ci.yml`) runs clippy, the tests and a release build on Windows for every PR and every push to `main`.
 - Enable the hook that blocks `git push` when tests fail (once per clone):
   ```
   git config core.hooksPath .githooks

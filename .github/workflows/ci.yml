@@ -1,7 +1,9 @@
 name: ci
 
 on:
+  # PRs run once (pull_request); pushes only for main, so a PR branch isn't tested twice.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -10,23 +12,18 @@ permissions:
 jobs:
   test:
     strategy:
-      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        # ponytail: Windows only until the Unix port exists (ConPTY, Job Objects, creation_flags).
+        # Add ubuntu-latest / macos-latest back then. Keep the matrix: branch protection requires
+        # the check named "test (windows-latest)".
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
-    # ponytail: Rayo is Windows-only today (ConPTY, Job Objects, creation_flags).
-    # Linux/macOS jobs report status but don't block until the Unix port lands; delete this line then.
-    continue-on-error: ${{ matrix.os != 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Linux GUI libs
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libwayland-dev
-      # Each OS runs the tests compiled for it: #[cfg(windows)] / #[cfg(unix)] tests are the per-OS ones.
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked
