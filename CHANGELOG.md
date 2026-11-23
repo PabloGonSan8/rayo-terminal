@@ -4,6 +4,42 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 
 **English** · [Español](#español)
 
+## [0.2.0] — 2026-11-23
+
+### Security
+
+- The in-app updater verifies the SHA-256 of the downloaded exe against `rayo.exe.sha256` from the release, and refuses releases without it.
+- `install.ps1` verifies the same checksum (it only warns for v0.1.0, which predates the file).
+- Releases are built with `--locked` and carry a build provenance attestation (`gh attestation verify`).
+- Block marks carry a random per-session token, so program output (e.g. `cat` of a file with escape codes) can't fake the end of a block or change the shown folder.
+
+### Fixed
+
+- Resizing the window while a command runs (Claude Code, long builds…) no longer shifts the block: pieces of Rayo's internal command line no longer show up, and the first lines (e.g. the top of a table) are no longer cut off.
+- A crash in one pane's I/O thread no longer takes down the whole window: locks survive it and the pane is closed.
+- A shell that exits right after starting (wrong program or arguments, broken profile) stays open with its error and a message, instead of vanishing.
+- The last output of a shell that exits is no longer lost.
+- An invalid `config.toml` is copied to `config.invalid.toml` before anything can overwrite it, and Rayo says so.
+- `config.toml` and the session are written atomically; settings are saved once a change settles, not on every frame of a slider drag.
+- `history.txt` no longer grows forever: it is trimmed back to the last 5000 commands.
+- Ctrl+Shift+V in the editor pastes at the cursor, not at the end.
+- Agent detection no longer matches commands like `cd claude-notes`.
+- Claude Code usage is read line by line (big logs) and only one scan runs at a time.
+- Several tooltips (window buttons, update, close pane, shortcuts) were Spanish-only.
+- Fonts are looked up in `%WINDIR%\Fonts`; Git Bash is also found in per-user installs.
+
+### Added
+
+- Closing a pane, tab or the window while a command runs asks first (Settings → Terminal → Confirm on close).
+- Commands starting with a space are not saved to the history.
+- Panics are written to `%APPDATA%\rayo\crash.log`.
+- The exe has version information (Explorer → Properties → Details).
+- End-to-end tests over a real ConPTY (PowerShell block with exit code, shell exit).
+- **Ctrl+R** searches the history: every typed word must appear, newest first, in the completion list (Ctrl+R again moves down, Enter/Tab picks).
+- **Ctrl+F** finds text in the output of finished blocks: Enter next, Shift+Enter previous, Esc closes. The match is selected, so Ctrl+C copies it.
+- The taskbar flashes when a command of 10 s or more ends while Rayo isn't in front (Settings → Terminal → Notify when done).
+- Frozen block output is capped at 200 000 rows in total per pane; the oldest blocks go first.
+
 ## [0.1.0] — 2026-11-23
 
 First public release. A fast, lightweight terminal for Windows 10 (1809+) / 11, written in Rust. No AI built in and no account needed.
@@ -42,6 +78,42 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 
 ## Español
 
+## [0.2.0] — 2026-11-23
+
+### Seguridad
+
+- El actualizador comprueba el SHA-256 del exe descargado con el `rayo.exe.sha256` de la versión y rechaza las versiones que no lo traen.
+- `install.ps1` comprueba la misma suma (con v0.1.0, que no la tiene, solo avisa).
+- Las versiones se compilan con `--locked` y llevan una atestación de procedencia del build (`gh attestation verify`).
+- Las marcas de bloque llevan un token aleatorio por sesión: la salida de un programa (p. ej. `cat` de un archivo con secuencias de escape) ya no puede fingir el final de un bloque ni cambiar la carpeta mostrada.
+
+### Arreglado
+
+- Redimensionar la ventana con un comando en marcha (Claude Code, compilaciones largas…) ya no descoloca el bloque: no aparecen trozos de la línea interna de Rayo ni se cortan las primeras líneas (p. ej. la parte de arriba de una tabla).
+- Un fallo en el hilo de E/S de un panel ya no cierra la ventana entera: los bloqueos lo aguantan y se cierra solo ese panel.
+- Un shell que se cierra nada más arrancar (programa o argumentos erróneos, perfil roto) se queda abierto con su error y un aviso, en vez de desaparecer.
+- Ya no se pierde la última salida de un shell que termina.
+- Un `config.toml` inválido se copia a `config.invalid.toml` antes de que nada lo sobrescriba, y Rayo avisa.
+- `config.toml` y la sesión se escriben de forma atómica; los ajustes se guardan cuando el cambio se estabiliza, no en cada frame al arrastrar un deslizador.
+- `history.txt` ya no crece sin límite: se recorta a los últimos 5000 comandos.
+- Ctrl+Shift+V en el editor pega en el cursor, no al final.
+- La detección de agentes ya no reconoce comandos como `cd claude-notes`.
+- El uso de Claude Code se lee línea a línea (registros grandes) y solo corre un cálculo a la vez.
+- Varias ayudas emergentes (botones de ventana, actualizar, cerrar panel, atajos) solo estaban en español.
+- Las fuentes se buscan en `%WINDIR%\Fonts`; Git Bash también se encuentra en instalaciones por usuario.
+
+### Añadido
+
+- Cerrar un panel, una pestaña o la ventana con un comando en marcha pide confirmación (Ajustes → Terminal → Confirmar al cerrar).
+- Los comandos que empiezan por espacio no se guardan en el historial.
+- Los errores fatales se escriben en `%APPDATA%\rayo\crash.log`.
+- El exe lleva información de versión (Explorador → Propiedades → Detalles).
+- Tests de extremo a extremo sobre ConPTY real (bloque de PowerShell con código de salida, salida del shell).
+- **Ctrl+R** busca en el historial: deben aparecer todas las palabras escritas, del más reciente al más antiguo, en la lista de autocompletado (Ctrl+R otra vez baja, Enter/Tab elige).
+- **Ctrl+F** busca texto en la salida de los bloques terminados: Enter siguiente, Mayús+Enter anterior, Esc cierra. La coincidencia queda seleccionada, así que Ctrl+C la copia.
+- La barra de tareas parpadea cuando termina un comando de 10 s o más y Rayo no está en primer plano (Ajustes → Terminal → Avisar al terminar).
+- La salida guardada de los bloques tiene un tope de 200 000 filas en total por panel; se van primero los bloques más antiguos.
+
 ## [0.1.0] — 2026-11-23
 
 Primera versión pública. Terminal rápida y ligera para Windows 10 (1809+) / 11, escrita en Rust. Sin IA integrada y sin cuentas.
@@ -76,4 +148,5 @@ O descarga `rayo.exe` abajo y ábrelo. Windows puede mostrar un aviso de SmartSc
 - Rayo no se puede elegir como aplicación de terminal predeterminada de Windows 11.
 - Los bloques de comandos necesitan PowerShell. cmd, WSL y Git Bash funcionan como terminal clásica.
 
+[0.2.0]: https://github.com/PabloGonSan8/rayo-terminal/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PabloGonSan8/rayo-terminal/releases/tag/v0.1.0

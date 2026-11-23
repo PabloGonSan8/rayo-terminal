@@ -190,7 +190,7 @@ pub const THEMES: &[Theme] = &[
 pub fn with_fg(base: &'static Theme, rgb: [u8; 3]) -> &'static Theme {
     static CACHE: std::sync::Mutex<Vec<&'static Theme>> = std::sync::Mutex::new(Vec::new());
     let fg = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-    let mut cache = CACHE.lock().unwrap();
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(t) = cache.iter().find(|t| t.name == base.name && t.fg == fg) {
         return t;
     }

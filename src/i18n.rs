@@ -215,6 +215,10 @@ const EN: &[(&str, &str)] = &[
     ("Reducir letra", "Smaller font"),
     ("Tamaño de letra original", "Reset font size"),
     ("Limpiar bloques", "Clear blocks"),
+    ("Buscar en el historial", "Search history"),
+    ("Buscar en la salida", "Find in output"),
+    ("Sin resultados", "No results"),
+    ("Enter: siguiente · Mayús+Enter: anterior · Esc: cerrar", "Enter: next · Shift+Enter: previous · Esc: close"),
     ("Subir una página del historial", "Scroll up one page"),
     ("Bajar una página del historial", "Scroll down one page"),
     ("RePág", "PgUp"),
@@ -242,6 +246,25 @@ const EN: &[(&str, &str)] = &[
     ("Editar de nuevo", "Edit again"),
     ("Ejecutando…", "Running…"),
     ("No se pudo descargar la actualización", "Couldn't download the update"),
+    // Window controls
+    ("Cerrar", "Close"),
+    ("Restaurar", "Restore"),
+    ("Maximizar", "Maximize"),
+    ("Minimizar", "Minimize"),
+    // Close confirmation
+    ("Cancelar", "Cancel"),
+    ("¿Cerrar con comandos en ejecución?", "Close with commands still running?"),
+    ("Confirmar al cerrar", "Confirm on close"),
+    (
+        "Pregunta antes de cerrar si hay un comando en marcha",
+        "Ask before closing while a command is running",
+    ),
+    ("Integrada", "Built-in"),
+    ("Avisar al terminar", "Notify when done"),
+    (
+        "Parpadea en la barra de tareas cuando acaba un comando largo (10 s o más) y Rayo no está en primer plano",
+        "Flash the taskbar when a long command (10 s or more) ends while Rayo isn't in front",
+    ),
 ];
 
 #[cfg(test)]

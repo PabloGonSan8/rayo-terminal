@@ -31,12 +31,16 @@ impl Job {
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
+            // Without KILL_ON_JOB_CLOSE the job would leak processes on close: no job then.
+            if SetInformationJobObject(
                 job.0,
                 JobObjectExtendedLimitInformation,
                 &info as *const _ as *const _,
                 std::mem::size_of_val(&info) as u32,
-            );
+            ) == 0
+            {
+                return None;
+            }
             let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
             if proc.is_null() {
                 return None;

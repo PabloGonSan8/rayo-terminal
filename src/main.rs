@@ -28,10 +28,39 @@ use chrome::{BAR_H, Icon};
 use config::{Config, CursorStyle};
 use keys::{Action, Combo};
 use pane::{BlockAction, Editor, Metrics, Pane, View};
-use session::Phase;
+use session::{LockExt as _, Phase};
 use theme::Theme;
 
+/// Panics are invisible in a GUI-subsystem exe: append them to `%APPDATA%\rayo\crash.log`
+/// so bug reports can include what happened.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write;
+        let path = Config::path().with_file_name("crash.log");
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default();
+        let thread = std::thread::current();
+        let bt = std::backtrace::Backtrace::force_capture();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(
+                f,
+                "--- unix {secs} · Rayo v{} · thread {}\n{info}\n{bt}",
+                env!("CARGO_PKG_VERSION"),
+                thread.name().unwrap_or("?"),
+            );
+        }
+        default(info);
+    }));
+}
+
 fn main() -> eframe::Result {
+    install_panic_hook();
     alacritty_terminal::tty::setup_env();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -318,6 +347,8 @@ struct App {
     applied_theme: &'static str,
     saved_session: config::Session,
     last_session_save: f64,
+    /// Settings changed at this time and not written yet (see `ui`).
+    unsaved_since: Option<f64>,
     panes: HashMap<u64, Pane>,
     next_id: u64,
     tabs: Vec<Tab>,
@@ -342,6 +373,29 @@ struct App {
     update: std::sync::Arc<std::sync::Mutex<update::State>>,
     /// Started on a folder from the command line: don't overwrite the saved session.
     ephemeral: bool,
+    /// Close waiting for confirmation because a command is still running.
+    confirm: Option<CloseReq>,
+    /// Window close already confirmed: let it through.
+    close_ok: bool,
+    /// Ctrl+F bar over the block view.
+    find: Option<Find>,
+}
+
+struct Find {
+    pane: u64,
+    query: String,
+    /// (match number, total) of the last search.
+    status: Option<(usize, usize)>,
+    focus: bool,
+}
+
+/// What a close button / shortcut asked to close. Tabs are named by one of their
+/// panes so the request survives tabs closing or moving before it is confirmed.
+#[derive(Clone, Copy)]
+enum CloseReq {
+    Pane(u64),
+    Tab(u64),
+    Window,
 }
 
 /// Start folder from the command line: `rayo <dir>`, `rayo -d <dir>` or
@@ -358,7 +412,7 @@ fn start_dir(mut args: impl Iterator<Item = String>) -> Option<String> {
 
 impl App {
     fn new(ctx: &egui::Context) -> Self {
-        let cfg = Config::load();
+        let (cfg, cfg_error) = Config::load();
         i18n::set(&cfg.language);
         // Scan PATH for command highlighting now, not on the first keystroke.
         std::thread::spawn(|| shell::is_command(""));
@@ -369,6 +423,7 @@ impl App {
             applied_theme: "",
             saved_session: config::Session::default(),
             last_session_save: 0.0,
+            unsaved_since: None,
             panes: HashMap::new(),
             next_id: 1,
             tabs: vec![],
@@ -383,12 +438,23 @@ impl App {
             capturing: None,
             key_msg: None,
             scroll_acc: 0.0,
-            error: None,
+            error: cfg_error.map(|e| {
+                format!(
+                    "{}: {e}",
+                    i18n::pick(
+                        "config.toml tiene un error, se usan los valores por defecto. Copia guardada",
+                        "config.toml has an error, using defaults. Copy saved"
+                    )
+                )
+            }),
             title: String::new(),
             agents_at: None,
             usage: Default::default(),
             update: Default::default(),
             ephemeral: false,
+            confirm: None,
+            close_ok: false,
+            find: None,
         };
         app.apply_style(ctx);
         update::cleanup();
@@ -396,7 +462,7 @@ impl App {
         let (upd, c) = (app.update.clone(), ctx.clone());
         std::thread::spawn(move || {
             if let Some(r) = update::check() {
-                *upd.lock().unwrap() = update::State::Available(r);
+                *upd.locked() = update::State::Available(r);
                 c.request_repaint();
             }
         });
@@ -550,7 +616,7 @@ impl App {
                 .insert(FontFamily::Name("bold".into()), bold_family);
             // Native Windows UI font for the chrome.
             for file in ["SegUIVar.ttf", "segoeui.ttf"] {
-                if let Ok(bytes) = std::fs::read(format!(r"C:\Windows\Fonts\{file}")) {
+                if let Ok(bytes) = std::fs::read(config::fonts_dir().join(file)) {
                     defs.font_data.insert(
                         "ui".into(),
                         egui::FontData::from_owned(bytes).tweak(wght(400.0)).into(),
@@ -565,7 +631,7 @@ impl App {
             // Fallback for symbols the text fonts lack (✓ ⬆ ⏺ ⎿ ✻, monochrome emoji): without
             // it they render as boxes, in the chrome and in TUIs like Claude Code.
             // ponytail: Segoe UI Symbol only (2.4 MB); the colour emoji font is 12 MB of RAM.
-            if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\seguisym.ttf") {
+            if let Ok(bytes) = std::fs::read(config::fonts_dir().join("seguisym.ttf")) {
                 defs.font_data
                     .insert("symbols".into(), egui::FontData::from_owned(bytes).into());
                 for fam in defs.families.values_mut() {
@@ -751,6 +817,123 @@ impl App {
         }
     }
 
+    /// Index of the tab holding pane `id`.
+    fn tab_of(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| {
+            let mut v = vec![];
+            t.root.leaves(&mut v);
+            v.contains(&id)
+        })
+    }
+
+    /// Panes a close request would end.
+    fn close_targets(&self, req: CloseReq) -> Vec<u64> {
+        match req {
+            CloseReq::Pane(id) => vec![id],
+            CloseReq::Tab(id) => self
+                .tab_of(id)
+                .map(|ti| {
+                    let mut v = vec![];
+                    self.tabs[ti].root.leaves(&mut v);
+                    v
+                })
+                .unwrap_or_default(),
+            CloseReq::Window => self.panes.keys().copied().collect(),
+        }
+    }
+
+    /// How many of `ids` are running a command.
+    // ponytail: only panes with shell integration know a command is running; cmd/WSL/Git Bash
+    // panes close without asking. Upgrade: count job processes besides the shell.
+    fn busy(&self, ids: &[u64]) -> usize {
+        ids.iter()
+            .filter(|id| self.panes.get(id).is_some_and(|p| p.busy()))
+            .count()
+    }
+
+    /// Close now, or ask first when it would kill a running command.
+    fn request_close(&mut self, req: CloseReq) {
+        if self.cfg.confirm_close && self.busy(&self.close_targets(req)) > 0 {
+            self.confirm = Some(req);
+        } else {
+            self.do_close(req, None);
+        }
+    }
+
+    fn do_close(&mut self, req: CloseReq, ctx: Option<&egui::Context>) {
+        match req {
+            CloseReq::Pane(id) => self.close_pane(id),
+            CloseReq::Tab(id) => {
+                if let Some(ti) = self.tab_of(id) {
+                    self.close_tab(ti);
+                }
+            }
+            CloseReq::Window => {
+                self.close_ok = true;
+                if let Some(ctx) = ctx {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(req) = self.confirm else { return };
+        let n = self.busy(&self.close_targets(req));
+        if n == 0 {
+            // The command ended while the dialog was open: nothing to lose.
+            self.confirm = None;
+            self.do_close(req, Some(ctx));
+            return;
+        }
+        let t = self.theme();
+        let (mut yes, mut no) = (false, false);
+        egui::Window::new("confirm-close")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .order(egui::Order::Foreground)
+            .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(16)))
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                ui.label(
+                    RichText::new(i18n::t("¿Cerrar con comandos en ejecución?"))
+                        .size(14.0)
+                        .strong()
+                        .color(t.fg),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{n} {}",
+                        i18n::pick(
+                            "comando(s) siguen en marcha y se terminarán.",
+                            "command(s) are still running and will be ended."
+                        )
+                    ))
+                    .size(12.0)
+                    .color(t.muted()),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let close = egui::Button::new(RichText::new(i18n::t("Cerrar")).color(t.bg))
+                        .fill(t.error());
+                    yes = ui.add(close).clicked();
+                    no = ui.button(i18n::t("Cancelar")).clicked();
+                });
+            });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            no = true;
+        }
+        if yes {
+            self.confirm = None;
+            self.do_close(req, Some(ctx));
+        } else if no {
+            self.confirm = None;
+        }
+    }
+
     fn close_tab(&mut self, ti: usize) {
         let tab = self.tabs.remove(ti);
         let mut v = vec![];
@@ -882,8 +1065,37 @@ impl App {
                     Some(Action::Paste) => {
                         if let (Some(p), Some(t)) = (self.panes.get_mut(&id), pane::clipboard_get())
                         {
-                            p.editor.text.push_str(&t);
-                            p.editor.set_cursor_end = true;
+                            // At the cursor, like Ctrl+V, not at the end.
+                            let e = &mut p.editor;
+                            let at = e.text.char_indices().nth(e.cursor).map_or(e.text.len(), |(b, _)| b);
+                            e.text.insert_str(at, &t);
+                            e.cursor_to = Some(e.cursor + t.chars().count());
+                            e.set_cursor_end = true;
+                        }
+                        return;
+                    }
+                    // Ctrl+R: history matching what's typed, newest first, in the
+                    // completion list. Pressed again, it moves down the list.
+                    Some(Action::Find) => {
+                        self.find = Some(Find {
+                            pane: id,
+                            query: String::new(),
+                            status: None,
+                            focus: true,
+                        });
+                        return;
+                    }
+                    Some(Action::HistorySearch) => {
+                        let (Some(p), h) = (self.panes.get_mut(&id), &self.history) else {
+                            return;
+                        };
+                        let e = &mut p.editor;
+                        if e.hist_search && !e.candidates.is_empty() {
+                            e.cand_sel = (e.cand_sel + 1) % e.candidates.len();
+                        } else {
+                            e.candidates = history_matches(h, &e.text);
+                            e.cand_sel = 0;
+                            e.hist_search = !e.candidates.is_empty();
                         }
                         return;
                     }
@@ -911,16 +1123,20 @@ impl App {
                             return;
                         }
                         Key::Enter | Key::Tab if !m.ctrl && !m.alt => {
-                            e.text = shell::apply_completion(
-                                &e.text,
-                                &e.candidates[e.cand_sel.min(n - 1)],
-                            );
+                            let cand = &e.candidates[e.cand_sel.min(n - 1)];
+                            e.text = if e.hist_search {
+                                cand.clone()
+                            } else {
+                                shell::apply_completion(&e.text, cand)
+                            };
                             e.candidates.clear();
+                            e.hist_search = false;
                             e.set_cursor_end = true;
                             return;
                         }
                         Key::Escape => {
                             e.candidates.clear();
+                            e.hist_search = false;
                             return;
                         }
                         _ => {}
@@ -1000,7 +1216,9 @@ impl App {
             branch: p.editor.branch.take(),
             ..Default::default()
         };
-        if self.history.last() != Some(&cmd) {
+        // A leading space keeps a command out of the history (bash's `ignorespace`),
+        // for one-off lines with tokens or passwords.
+        if !cmd.starts_with(' ') && self.history.last() != Some(&cmd) {
             self.history.push(cmd.clone());
             config::append_history(&cmd);
         }
@@ -1043,7 +1261,7 @@ impl App {
             Action::NewTab => self.new_tab(ctx),
             Action::ClosePane => {
                 if let Some(t) = self.tabs.get(self.active) {
-                    self.close_pane(t.focus);
+                    self.request_close(CloseReq::Pane(t.focus));
                 }
             }
             Action::SplitRight => self.split(ctx, Dir::Right),
@@ -1076,6 +1294,8 @@ impl App {
                     p.scroll_page(action == Action::PageUp);
                 }
             }
+            // Only Rayo's editor searches; a process (cmd, bash, PSReadLine) keeps its own Ctrl+R.
+            Action::HistorySearch | Action::Find => return false,
         }
         true
     }
@@ -1088,7 +1308,7 @@ impl App {
             return "terminal".into();
         };
         // With shell integration the folder name is the most useful label.
-        let cwd = p.shared.lock().unwrap().cwd.clone();
+        let cwd = p.shared.locked().cwd.clone();
         cwd.and_then(|c| {
             let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned());
             if home.as_deref() == Some(c.trim_end_matches('\\')) {
@@ -1111,7 +1331,7 @@ impl App {
             full.max.y - 0.5,
             Stroke::new(1.0, t.border().gamma_multiply(0.7)),
         );
-        let upd_label = match &*self.update.lock().unwrap() {
+        let upd_label = match &*self.update.locked() {
             update::State::Available(r) => Some(format!("⬆ {} v{}", i18n::pick("Actualizar a", "Update to"), r.version)),
             update::State::Installing(v) => Some(format!("{} v{v}…", i18n::pick("Descargando", "Downloading"))),
             _ => None,
@@ -1182,7 +1402,7 @@ impl App {
                     let running = leaves.iter().any(|id| {
                         self.panes
                             .get(id)
-                            .is_some_and(|p| p.shared.lock().unwrap().running())
+                            .is_some_and(|p| p.shared.locked().running())
                     });
                     let unseen = !selected
                         && leaves
@@ -1326,7 +1546,7 @@ impl App {
                                 .fill(t.accent)
                                 .corner_radius(6),
                         )
-                        .on_hover_text("Instala la nueva versión y reinicia Rayo (las pestañas se restauran)");
+                        .on_hover_text(i18n::t("Instala la nueva versión y reinicia Rayo (las pestañas se restauran)"));
                     if b.clicked() {
                         self.start_update(ctx);
                     }
@@ -1335,7 +1555,7 @@ impl App {
         );
 
         if let Some(i) = close {
-            self.close_tab(i);
+            self.request_close(CloseReq::Tab(self.tabs[i].focus));
         }
         if new_tab {
             self.new_tab(ctx);
@@ -1445,7 +1665,10 @@ impl App {
                         pane.editor.text = c;
                         pane.editor.set_cursor_end = true;
                     }
-                    let take_focus = is_focus && !self.settings_open && self.renaming.is_none();
+                    let take_focus = is_focus
+                        && !self.settings_open
+                        && self.renaming.is_none()
+                        && self.find.is_none();
                     if !hide_bar {
                         editor_ui(
                             ui,
@@ -1579,7 +1802,7 @@ impl App {
                     );
                 }
                 if cresp
-                    .on_hover_text("Cerrar panel  (Ctrl Shift W)")
+                    .on_hover_text(i18n::t("Cerrar panel  (Ctrl Shift W)"))
                     .clicked()
                 {
                     close = Some(*id);
@@ -1594,7 +1817,7 @@ impl App {
         }
         self.rects = rects;
         if let Some(id) = close {
-            self.close_pane(id);
+            self.request_close(CloseReq::Pane(id));
         }
     }
 
@@ -1932,11 +2155,11 @@ impl App {
                 }
                 rows.row(ui, i18n::t("Fuente"), i18n::t("Fuentes monoespaciadas instaladas"), |ui| {
                     egui::ComboBox::from_id_salt("font")
-                        .selected_text(&cfg.font)
+                        .selected_text(i18n::t(&cfg.font))
                         .width(170.0)
                         .show_ui(ui, |ui| {
                             for f in config::available_fonts() {
-                                ui.selectable_value(&mut cfg.font, f.to_string(), f);
+                                ui.selectable_value(&mut cfg.font, f.to_string(), i18n::t(f));
                             }
                         });
                 });
@@ -2053,6 +2276,22 @@ impl App {
                 );
                 rows.row(
                     ui,
+                    i18n::t("Confirmar al cerrar"),
+                    i18n::t("Pregunta antes de cerrar si hay un comando en marcha"),
+                    |ui| {
+                        ui.checkbox(&mut cfg.confirm_close, "");
+                    },
+                );
+                rows.row(
+                    ui,
+                    i18n::t("Avisar al terminar"),
+                    i18n::t("Parpadea en la barra de tareas cuando acaba un comando largo (10 s o más) y Rayo no está en primer plano"),
+                    |ui| {
+                        ui.checkbox(&mut cfg.notify_done, "");
+                    },
+                );
+                rows.row(
+                    ui,
                     i18n::t("Clic derecho pega"),
                     i18n::t("Con selección, el clic derecho copia"),
                     |ui| {
@@ -2150,7 +2389,7 @@ impl App {
                         } else {
                             Stroke::NONE
                         });
-                        if ui.add(btn).on_hover_text("Cambiar atajo").clicked() {
+                        if ui.add(btn).on_hover_text(i18n::t("Cambiar atajo")).clicked() {
                             *capturing = Some(id);
                         }
                         if value != *default
@@ -2158,7 +2397,8 @@ impl App {
                                 ui,
                                 Icon::SmallClose,
                                 &format!(
-                                    "Restablecer ({})",
+                                    "{} ({})",
+                                    i18n::t("Restablecer"),
                                     Combo::parse(default).map(Combo::label).unwrap_or_default()
                                 ),
                                 Vec2::new(22.0, 22.0),
@@ -2193,7 +2433,7 @@ impl App {
     }
 
     fn start_update(&self, ctx: &egui::Context) {
-        let mut st = self.update.lock().unwrap();
+        let mut st = self.update.locked();
         let update::State::Available(r) = &*st else { return };
         let r = r.clone();
         *st = update::State::Installing(r.version.clone());
@@ -2203,18 +2443,18 @@ impl App {
                 Ok(exe) => update::State::Installed(exe),
                 Err(_) => update::State::Available(r), // retry from the button
             };
-            *upd.lock().unwrap() = next;
+            *upd.locked() = next;
             c.request_repaint();
         });
     }
 
     /// New exe in place: save tabs, launch it, quit.
     fn finish_update(&mut self, ctx: &egui::Context) {
-        let exe = match &*self.update.lock().unwrap() {
+        let exe = match &*self.update.locked() {
             update::State::Installed(exe) => exe.clone(),
             _ => return,
         };
-        *self.update.lock().unwrap() = update::State::Idle;
+        *self.update.locked() = update::State::Idle;
         self.save_session();
         match std::process::Command::new(&exe).spawn() {
             Ok(_) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -2230,7 +2470,7 @@ impl App {
             tab.root.leaves(&mut leaves);
             for id in leaves {
                 let Some(p) = self.panes.get(&id) else { continue };
-                let s = p.shared.lock().unwrap();
+                let s = p.shared.locked();
                 let block = s.blocks.back().filter(|b| b.running());
                 let found = block
                     .and_then(|b| agents::detect(&b.cmd).map(|a| (a, b.cmd.clone(), b.start)))
@@ -2245,9 +2485,16 @@ impl App {
     }
 
     fn refresh_usage(&self, ctx: &egui::Context) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // One scan at a time: clicking the button repeatedly must not pile up threads.
+        static SCANNING: AtomicBool = AtomicBool::new(false);
+        if SCANNING.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let (usage, ctx) = (self.usage.clone(), ctx.clone());
         std::thread::spawn(move || {
-            *usage.lock().unwrap() = Some(agents::claude_usage());
+            *usage.locked() = Some(agents::claude_usage());
+            SCANNING.store(false, Ordering::Release);
             ctx.request_repaint();
         });
     }
@@ -2257,7 +2504,7 @@ impl App {
         let t = self.theme();
         let list = self.agents();
         let tab_names: Vec<String> = self.tabs.iter().map(|tb| self.tab_label(tb)).collect();
-        let usage = self.usage.lock().unwrap().clone();
+        let usage = self.usage.locked().clone();
         let mut go = None;
         let area = egui::Area::new(Id::unique("agents"))
             .order(egui::Order::Foreground)
@@ -2283,7 +2530,7 @@ impl App {
                             let text = format!("{name}  ·  {}{time}\n{what}", tab_names[*tab]);
                             if ui
                                 .add(egui::Button::new(RichText::new(text).size(12.0).color(t.fg)).frame(false))
-                                .on_hover_text("Ir al panel")
+                                .on_hover_text(i18n::t("Ir al panel"))
                                 .clicked()
                             {
                                 go = Some((*tab, *id));
@@ -2364,6 +2611,74 @@ impl App {
         }
     }
 
+    /// Ctrl+F: Enter next, Shift+Enter previous, Esc closes. The match is shown as the
+    /// block selection, so Ctrl+C copies it.
+    fn find_bar(&mut self, ctx: &egui::Context) {
+        let t = self.theme();
+        let Some(f) = self.find.as_mut() else {
+            return;
+        };
+        let Some(p) = self.panes.get(&f.pane) else {
+            self.find = None;
+            return;
+        };
+        let mut close = false;
+        egui::Area::new(Id::unique("find"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(ctx.content_rect().right_top() + Vec2::new(-14.0, BAR_H + 10.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(t.bg2())
+                    .stroke(Stroke::new(1.0, t.border()))
+                    .corner_radius(8)
+                    .inner_margin(6)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let r = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut f.query)
+                                        .desired_width(220.0)
+                                        .hint_text(i18n::t("Buscar en la salida")),
+                                )
+                                .on_hover_text(i18n::t(
+                                    "Enter: siguiente · Mayús+Enter: anterior · Esc: cerrar",
+                                ));
+                            let (enter, shift, esc) = ui.input(|i| {
+                                (
+                                    i.key_pressed(Key::Enter),
+                                    i.modifiers.shift,
+                                    i.key_pressed(Key::Escape),
+                                )
+                            });
+                            if r.changed() {
+                                f.status = p.find(&f.query, false, true);
+                            }
+                            if enter {
+                                f.status = p.find(&f.query, shift, false);
+                            }
+                            // Single-line edits drop focus on Enter: keep typing.
+                            if f.focus || enter {
+                                r.request_focus();
+                                f.focus = false;
+                            }
+                            let status = match f.status {
+                                Some((i, n)) => format!("{i}/{n}"),
+                                None if f.query.is_empty() => String::new(),
+                                None => i18n::t("Sin resultados").to_string(),
+                            };
+                            ui.label(RichText::new(status).color(t.muted()).size(12.0));
+                            if esc || ui.small_button(i18n::t("Cerrar")).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+        if close {
+            self.find = None;
+        }
+    }
+
     fn error_toast(&mut self, ctx: &egui::Context) {
         let Some(err) = self.error.clone() else {
             return;
@@ -2399,7 +2714,11 @@ impl App {
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        if self.settings_open || self.renaming.is_some() {
+        if self.settings_open
+            || self.renaming.is_some()
+            || self.confirm.is_some()
+            || self.find.is_some()
+        {
             return;
         }
         // Images and dropped files become pasted paths: AI CLIs (Claude Code,
@@ -2481,6 +2800,9 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_session();
+        if self.unsaved_since.is_some() {
+            self.cfg.save();
+        }
     }
 
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
@@ -2491,14 +2813,39 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         self.handle_input(&ctx);
 
+        let mut early = None;
         let exited: Vec<u64> = self
             .panes
             .iter_mut()
             .filter_map(|(id, p)| {
                 p.poll(&ctx);
-                p.exited.then_some(*id)
+                if !p.exited || p.kept {
+                    return None;
+                }
+                // A shell that dies right away (bad program / arguments, broken profile)
+                // stays open as a plain terminal so its error can be read.
+                if p.just_started() {
+                    p.kept = true;
+                    p.integrated = false;
+                    early = Some(p.exit_code());
+                    return None;
+                }
+                Some(*id)
             })
             .collect();
+        if let Some(code) = early {
+            self.error = Some(format!(
+                "{} «{}» {} ({}). {}",
+                i18n::pick("El shell", "The shell"),
+                self.cfg.shell_program,
+                i18n::pick("se cerró al iniciar", "exited on start"),
+                code.map_or("?".into(), |c| c.to_string()),
+                i18n::pick(
+                    "Revisa Ajustes → Shell. Cierra el panel con Ctrl+Shift+W.",
+                    "Check Settings → Shell. Close the pane with Ctrl+Shift+W."
+                ),
+            ));
+        }
         for id in exited {
             self.close_pane(id);
         }
@@ -2511,10 +2858,18 @@ impl eframe::App for App {
         if self.theme().name != self.applied_theme {
             self.apply_style(&ctx);
         }
+        // Changes apply at once but reach the disk once they settle: dragging a slider
+        // would otherwise rewrite config.toml every frame.
+        let now = ctx.input(|i| i.time);
         if self.cfg != self.saved {
-            self.cfg.save();
             self.saved = self.cfg.clone();
             self.apply_style(&ctx);
+            self.unsaved_since = Some(now);
+            ctx.request_repaint_after(Duration::from_millis(600));
+        }
+        if self.unsaved_since.is_some_and(|t| now - t > 0.5) {
+            self.cfg.save();
+            self.unsaved_since = None;
         }
 
         let queued: Vec<u64> = self
@@ -2526,7 +2881,6 @@ impl eframe::App for App {
         for id in queued {
             self.submit(id);
         }
-        let now = ctx.input(|i| i.time);
         if now - self.last_session_save > 3.0 {
             self.last_session_save = now;
             self.save_session();
@@ -2534,11 +2888,20 @@ impl eframe::App for App {
         // Running durations tick once per second, and only while you're looking:
         // an unfocused Rayo with `pnpm dev` running draws nothing unless output arrives.
         let window_focused = ctx.input(|i| i.focused);
+        let mut long_done = false;
+        for p in self.panes.values_mut() {
+            long_done |= std::mem::take(&mut p.long_done);
+        }
+        if long_done && !window_focused && self.cfg.notify_done {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
         if window_focused
             && self
                 .panes
                 .values()
-                .any(|p| p.shared.lock().unwrap().running())
+                .any(|p| p.shared.locked().running())
         {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
@@ -2586,7 +2949,18 @@ impl eframe::App for App {
         }
         self.finish_update(&ctx);
         self.agents_popover(&ctx);
+        self.find_bar(&ctx);
         self.error_toast(&ctx);
+        // Window close (button, Alt+F4, taskbar): ask first if something is running.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.close_ok
+            && self.cfg.confirm_close
+            && self.busy(&self.close_targets(CloseReq::Window)) > 0
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(CloseReq::Window);
+        }
+        self.confirm_dialog(&ctx);
     }
 }
 
@@ -2602,8 +2976,13 @@ fn completion_popup(
     if e.candidates.is_empty() {
         return None;
     }
-    let prefix_len = shell::completion_prefix(&e.text).chars().count();
+    let prefix_len = if e.hist_search {
+        0
+    } else {
+        shell::completion_prefix(&e.text).chars().count()
+    };
     let row_h = 26.0;
+    let width = if e.hist_search { 560.0 } else { 340.0 };
     let mut chosen = None;
     egui::Area::new(Id::unique(("completion", id)))
         .order(egui::Order::Foreground)
@@ -2626,10 +3005,32 @@ fn completion_popup(
                         .max_height(row_h * 8.0)
                         .show(ui, |ui| {
                             for (i, cand) in e.candidates.iter().enumerate() {
+                                let (r, resp) =
+                                    ui.allocate_exact_size(Vec2::new(width, row_h), Sense::click());
+                                if e.hist_search {
+                                    if i == e.cand_sel {
+                                        ui.painter().rect_filled(r, 5.0, t.bg3());
+                                        resp.scroll_to_me(None);
+                                    } else if resp.hovered() {
+                                        ui.painter()
+                                            .rect_filled(r, 5.0, t.bg3().gamma_multiply(0.5));
+                                    }
+                                    // One line per entry; the painter clips what doesn't fit.
+                                    let line = cand.replace('\n', " ⏎ ");
+                                    ui.painter_at(r.shrink2(Vec2::new(10.0, 0.0))).text(
+                                        Pos2::new(r.min.x + 10.0, r.center().y),
+                                        Align2::LEFT_CENTER,
+                                        line,
+                                        m.font.clone(),
+                                        t.fg,
+                                    );
+                                    if resp.clicked() {
+                                        chosen = Some(cand.clone());
+                                    }
+                                    continue;
+                                }
                                 let dir = cand.ends_with('\\');
                                 let name = cand.trim_end_matches('\\');
-                                let (r, resp) =
-                                    ui.allocate_exact_size(Vec2::new(340.0, row_h), Sense::click());
                                 let sel = i == e.cand_sel;
                                 if sel {
                                     ui.painter().rect_filled(r, 5.0, t.bg3());
@@ -2700,6 +3101,25 @@ fn completion_popup(
                 });
         });
     chosen
+}
+
+/// History entries containing every word of `query` (any order, case and accents
+/// ignored), newest first, without repeats.
+fn history_matches(history: &[String], query: &str) -> Vec<String> {
+    // ponytail: linear scan of ≤10k lines per keystroke; index it if it ever shows in a profile.
+    let words: Vec<String> = fold(query).split_whitespace().map(str::to_string).collect();
+    let mut seen = std::collections::HashSet::new();
+    history
+        .iter()
+        .rev()
+        .filter(|h| {
+            let h = fold(h);
+            words.iter().all(|w| h.contains(w.as_str()))
+        })
+        .filter(|h| seen.insert(h.as_str()))
+        .take(50)
+        .cloned()
+        .collect()
 }
 
 /// Newest history entry extending `text` (single-line input only).
@@ -2920,7 +3340,11 @@ fn editor_ui(
     if out.response.changed() {
         e.hist = None;
         // Typing with the list open filters it live.
-        if !e.candidates.is_empty() {
+        if e.hist_search {
+            e.candidates = history_matches(history, &e.text);
+            e.cand_sel = 0;
+            e.hist_search = !e.candidates.is_empty();
+        } else if !e.candidates.is_empty() {
             e.candidates = shell::path_candidates(&e.text, &cwd);
             e.cand_sel = 0;
         }
@@ -2933,12 +3357,17 @@ fn editor_ui(
         t,
         m,
     ) {
-        e.text = shell::apply_completion(&e.text, &chosen);
+        e.text = if e.hist_search {
+            chosen
+        } else {
+            shell::apply_completion(&e.text, &chosen)
+        };
         e.candidates.clear();
+        e.hist_search = false;
         e.set_cursor_end = true;
     }
     if e.set_cursor_end {
-        let n = e.text.chars().count();
+        let n = e.cursor_to.take().unwrap_or_else(|| e.text.chars().count());
         let mut st = out.state.clone();
         st.cursor.set_char_range(Some(egui::text::CCursorRange::one(
             egui::text::CCursor::new(n),
@@ -3032,6 +3461,17 @@ mod tests {
         let root = root.remove(1).unwrap();
         assert!(matches!(root, Node::Leaf(3)));
         assert!(root.remove(3).is_none());
+    }
+
+    #[test]
+    fn history_search_matches_words_newest_first() {
+        let h: Vec<String> = ["git status", "cargo test", "git push origin", "git status", "ls"]
+            .map(String::from)
+            .into();
+        assert_eq!(history_matches(&h, "git"), ["git status", "git push origin"]);
+        assert_eq!(history_matches(&h, "ORIGIN git"), ["git push origin"]);
+        assert_eq!(history_matches(&h, "").len(), 4);
+        assert!(history_matches(&h, "npm").is_empty());
     }
 
     #[test]

@@ -120,6 +120,8 @@ pub enum Action {
     ClearBlocks,
     PageUp,
     PageDown,
+    HistorySearch,
+    Find,
 }
 
 /// (action, config id, label, default)
@@ -219,6 +221,13 @@ pub const ACTIONS: &[(Action, &str, &str, &str)] = &[
         "Bajar una página del historial",
         "Shift+PageDown",
     ),
+    (
+        Action::HistorySearch,
+        "history_search",
+        "Buscar en el historial",
+        "Ctrl+R",
+    ),
+    (Action::Find, "find", "Buscar en la salida", "Ctrl+F"),
 ];
 
 /// Upgrade bindings whose default changed, unless the user customised them.

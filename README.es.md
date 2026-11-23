@@ -1,8 +1,18 @@
 # Rayo ⚡
 
+[![CI](https://github.com/PabloGonSan8/rayo-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/PabloGonSan8/rayo-terminal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PabloGonSan8/rayo-terminal)](https://github.com/PabloGonSan8/rayo-terminal/releases/latest)
+[![Licencia: MIT](https://img.shields.io/badge/licencia-MIT-blue.svg)](LICENSE)
+![Windows 10/11](https://img.shields.io/badge/plataforma-Windows%2010%2F11-0078D6)
+
 [English](README.md) · **Español**
 
-Terminal para Windows escrita en Rust, inspirada en Warp pero sin IA ni cuentas: solo terminal.
+Terminal nativa para Windows escrita en Rust, pensada para PowerShell y para trabajar con CLIs
+de IA: bloques de comandos al estilo Warp sin cuenta, un Ctrl+C que de verdad limpia lo que deja
+y un único `.exe`.
+
+Sin IA integrada, sin login, sin telemetría. Si usas agentes como Claude Code, Codex o Gemini CLI,
+Rayo los aloja bien (Shift+Enter, pegar imágenes, panel de agentes), pero nunca los necesita.
 
 - Motor VT: `alacritty_terminal` (ConPTY en Windows)
 - UI: `egui` / `eframe` (OpenGL, glow)
@@ -24,7 +34,12 @@ O a mano:
 
 1. Ve a [Releases](https://github.com/PabloGonSan8/rayo-terminal/releases/latest) y descarga `rayo.exe`.
 2. Ponlo en cualquier carpeta (p. ej. `%LOCALAPPDATA%\Programs\Rayo`) y ábrelo.
-3. Rayo avisa cuando hay una versión nueva.
+3. Rayo avisa cuando hay una versión nueva. El actualizador integrado solo instala una versión cuyo SHA-256 coincide con el `rayo.exe.sha256` publicado con ella.
+
+Para comprobar una descarga tú mismo: `Get-FileHash rayo.exe -Algorithm SHA256` tiene que coincidir
+con `rayo.exe.sha256` de la misma versión, y `gh attestation verify rayo.exe -R PabloGonSan8/rayo-terminal`
+comprueba que lo compiló el workflow de release de este repo. El exe todavía no está firmado, así que
+SmartScreen puede avisar: *Más información → Ejecutar de todas formas*.
 
 ### Opción B — compilar desde el código
 
@@ -91,6 +106,8 @@ Todo se guarda solo en `%APPDATA%\rayo\config.toml` (botón "Abrir archivo" para
 | Cambiar pestaña | `Ctrl + Tab`, `Ctrl + 1…9` |
 | Copiar / pegar | `Ctrl + C` (con selección) / `Ctrl + V`, clic derecho |
 | Zoom de fuente | `Ctrl + =` / `Ctrl + -` / `Ctrl + 0` |
+| Buscar en el historial (editor) | `Ctrl + R` |
+| Buscar en la salida de los bloques | `Ctrl + F` |
 
 Los separadores entre paneles se arrastran con el ratón para redimensionar.
 
@@ -101,7 +118,11 @@ Los separadores entre paneles se arrastran con el ratón para redimensionar.
 - **Enlaces**: Ctrl + clic abre URLs (y enlaces OSC 8) en bloques y en vista terminal.
 - **Selección en bloques**: arrastra para seleccionar; Ctrl+C o clic derecho copian.
 - **Ctrl+C real**: cada panel corre en un Job Object de Windows; al interrumpir se terminan los procesos que el shell deja huérfanos (p. ej. `node` tras `pnpm dev`) y al cerrar un panel se cierra todo lo que lanzó.
-- **Rendimiento**: renderizado OpenGL (glow), LTO; ~75 MB de RAM y 0 % de CPU en reposo.
+- **Ligera en reposo**: renderizado OpenGL (glow), LTO; 0 % de CPU en reposo. RAM: el proceso de Rayo con una pestaña de PowerShell midió entre ~75 y ~140 MB de working set (`Get-Process rayo`, build release, Windows 11; varía según el estado de la ventana y la GPU).
+- **Cierre seguro**: cerrar un panel, una pestaña o la ventana con un comando en marcha pide confirmación (Ajustes → Terminal → Confirmar al cerrar).
+- **Historial privado**: un comando que empieza por espacio no se guarda en el historial (como `ignorespace` en bash).
+- **Aviso al terminar**: la barra de tareas parpadea cuando termina un comando de 10 s o más con Rayo en segundo plano.
+- **Registro de fallos**: si Rayo se cierra por un error, los detalles quedan en `%APPDATA%\rayo\crash.log`. Adjúntalo al reportar el bug.
 - **Sesión**: al reabrir Rayo vuelven las pestañas, los splits y la carpeta de cada panel (Ajustes → Terminal → Restaurar sesión).
 - **Autocompletado**: Tab abre la lista de carpetas/archivos (↑↓ elegir, Tab/Enter aceptar, Esc cerrar; se filtra al escribir).
 - **Paneles**: Ctrl + Alt + flechas cambia de panel.

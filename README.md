@@ -1,8 +1,18 @@
 # Rayo ⚡
 
+[![CI](https://github.com/PabloGonSan8/rayo-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/PabloGonSan8/rayo-terminal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PabloGonSan8/rayo-terminal)](https://github.com/PabloGonSan8/rayo-terminal/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)
+
 **English** · [Español](README.es.md)
 
-A Windows terminal written in Rust, inspired by Warp but without AI or accounts: just a terminal.
+A native Windows terminal written in Rust, built for PowerShell and for running AI CLIs:
+Warp-style command blocks without an account, a Ctrl+C that really cleans up after itself,
+and a single `.exe`.
+
+No AI built in, no login, no telemetry. If you run agents like Claude Code, Codex or Gemini CLI,
+Rayo is a good host for them (Shift+Enter, pasted images, an agents panel), but it never needs one.
 
 - VT engine: `alacritty_terminal` (ConPTY on Windows)
 - UI: `egui` / `eframe` (OpenGL, glow)
@@ -24,7 +34,11 @@ Or by hand:
 
 1. Go to [Releases](https://github.com/PabloGonSan8/rayo-terminal/releases/latest) and download `rayo.exe`.
 2. Put it in any folder (e.g. `%LOCALAPPDATA%\Programs\Rayo`) and run it.
-3. Rayo tells you when a new version is available.
+3. Rayo tells you when a new version is available. The in-app updater only installs a release whose SHA-256 matches the `rayo.exe.sha256` published with it.
+
+To check a download yourself: `Get-FileHash rayo.exe -Algorithm SHA256` must match `rayo.exe.sha256`
+from the same release, and `gh attestation verify rayo.exe -R PabloGonSan8/rayo-terminal` checks it
+was built by this repo's release workflow. The exe isn't code-signed yet, so SmartScreen may warn: *More info → Run anyway*.
 
 ### Option B — build from source
 
@@ -91,6 +105,8 @@ Everything is saved automatically to `%APPDATA%\rayo\config.toml` ("Open file" b
 | Switch tab | `Ctrl + Tab`, `Ctrl + 1…9` |
 | Copy / paste | `Ctrl + C` (with selection) / `Ctrl + V`, right click |
 | Font zoom | `Ctrl + =` / `Ctrl + -` / `Ctrl + 0` |
+| Search history (editor) | `Ctrl + R` |
+| Find in block output | `Ctrl + F` |
 
 Drag the dividers between panes to resize them. Shortcuts are editable in Settings → Shortcuts.
 
@@ -100,7 +116,11 @@ Drag the dividers between panes to resize them. Shortcuts are editable in Settin
 - **Time-based theme**: Settings → Appearance (day/night theme and switch times).
 - **Links**: Ctrl + click opens URLs (and OSC 8 links).
 - **Real Ctrl+C**: each pane runs in a Windows Job Object; interrupting kills processes the shell leaves orphaned (e.g. `node` after `pnpm dev`) and closing a pane closes everything it started.
-- **Performance**: OpenGL rendering, LTO; ~75 MB RAM and 0 % CPU when idle.
+- **Light at rest**: OpenGL rendering, LTO; 0 % CPU when idle. RAM: the Rayo process with one PowerShell tab measured between ~75 and ~140 MB working set (`Get-Process rayo`, release build, Windows 11; it varies with window and GPU state).
+- **Safe closing**: closing a pane, tab or the window while a command runs asks first (Settings → Terminal → Confirm on close).
+- **Private history**: a command that starts with a space isn't saved to the history (like bash's `ignorespace`).
+- **Notify when done**: the taskbar flashes when a command of 10 s or more ends while Rayo is in the background.
+- **Crash log**: if Rayo ever crashes, the details go to `%APPDATA%\rayo\crash.log`. Attach it to the bug report.
 - **Session**: tabs, splits and each pane's folder come back when you reopen Rayo.
 
 ## Contributing

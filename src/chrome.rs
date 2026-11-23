@@ -235,7 +235,7 @@ pub fn window_controls(ui: &mut Ui, t: &Theme) {
     for (icon, tip, danger) in buttons {
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         paint_icon_button(ui, &resp, rect, icon, t, danger);
-        let resp = resp.on_hover_text(tip);
+        let resp = resp.on_hover_text(crate::i18n::t(tip));
         if resp.clicked() {
             ctx.send_viewport_cmd(match icon {
                 Icon::Close => ViewportCommand::Close,
