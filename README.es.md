@@ -56,7 +56,7 @@ rayo -d C:\proyecto  # igual, como Windows Terminal
 ## Desarrollo
 
 - `cargo test` ejecuta los tests.
-- La CI (`.github/workflows/ci.yml`) corre los tests en Windows, Linux y macOS en cada push/PR. Windows bloquea; Linux/macOS solo informan hasta que exista el port.
+- La CI (`.github/workflows/ci.yml`) pasa clippy, los tests y un build release en Windows en cada PR y en cada push a `main`.
 - Activa el hook que impide hacer `git push` si fallan los tests (una vez por clon):
   ```
   git config core.hooksPath .githooks
