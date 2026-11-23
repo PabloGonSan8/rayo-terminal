@@ -11,7 +11,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The app compares its own version with the tag: a mismatch would offer the update forever.
       - name: Tag matches Cargo.toml
         shell: bash
