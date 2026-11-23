@@ -1,0 +1,8 @@
+#!/bin/sh
+# Blocks `git push` when tests fail. Enable once per clone: git config core.hooksPath .githooks
+# Skip in an emergency: git push --no-verify
+echo "pre-push: cargo test..."
+cargo test --locked --quiet || {
+    echo "pre-push: tests failed, push cancelled / tests fallaron, push cancelado." >&2
+    exit 1
+}

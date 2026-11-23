@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The app compares its own version with the tag: a mismatch would offer the update forever.
+      - name: Tag matches Cargo.toml
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME != Cargo.toml v$v"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - run: cargo build --release
+      - uses: softprops/action-gh-release@v2
+        with:
+          # Keep the asset name "rayo.exe": install.ps1, the in-app updater and the website
+          # (download_count) all depend on it.
+          files: target/release/rayo.exe
+          generate_release_notes: true
