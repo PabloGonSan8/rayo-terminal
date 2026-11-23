@@ -8,7 +8,7 @@ Windows-first, keeps AI optional and doesn't trade speed for looks.
 **Positioning:** the native Windows terminal for PowerShell and AI-CLI workflows. Command blocks
 without an account, a Ctrl+C that really cleans up (Job Objects), one light `.exe`.
 
-## Phase 1 — Stability and security ✅ (unreleased, see CHANGELOG)
+## Phase 1 — Stability and security ✅ (v0.2.0, see CHANGELOG)
 
 - SHA-256 verification in the updater and installer, `--locked` releases, provenance attestation.
 - Locks survive a pane thread panic; panics go to `crash.log`.
@@ -72,7 +72,7 @@ sigue centrado en Windows, con la IA siempre opcional y sin sacrificar velocidad
 **Posicionamiento:** la terminal nativa de Windows para PowerShell y para trabajar con CLIs de IA.
 Bloques sin cuenta, un Ctrl+C que de verdad limpia (Job Objects), un único `.exe` ligero.
 
-## Fase 1 — Estabilidad y seguridad ✅ (sin publicar, ver CHANGELOG)
+## Fase 1 — Estabilidad y seguridad ✅ (v0.2.0, ver CHANGELOG)
 
 - Verificación SHA-256 en el actualizador y el instalador, releases con `--locked`, atestación de procedencia.
 - Los bloqueos aguantan un panic de un panel; los panics van a `crash.log`.

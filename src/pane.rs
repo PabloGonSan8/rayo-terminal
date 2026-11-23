@@ -341,11 +341,7 @@ impl Pane {
         self.fitted = true;
         self.pending_size = None;
         self.size = want;
-        self.shared
-            .lock()
-            .unwrap()
-            .term
-            .resize(TermSize::new(cols, rows));
+        self.shared.locked().term.resize(TermSize::new(cols, rows));
         self.io.send(Msg::Resize(self.window_size()));
         false
     }

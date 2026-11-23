@@ -8,7 +8,9 @@
 //! - removes PSReadLine: Rayo owns line editing, so input is plain cooked-mode.
 //!
 //! Each command is sent wrapped (`wrap_command`): it resets `$LASTEXITCODE`,
-//! remembers `$Error[0]`, prints `OSC 133;C` (output starts here) and dot-sources
+//! remembers `$Error[0]`, clears the screen and scrollback (the echo of this long line
+//! would otherwise sit above the output and re-wrap on every resize, moving where the
+//! output starts), prints `OSC 133;C` (output starts here, always line 0) and dot-sources
 //! the user's command decoded from Base64 (so quotes / multi-line text survive).
 
 use std::path::{Path, PathBuf};
@@ -192,7 +194,7 @@ fn b64_utf16(s: &str) -> String {
 pub fn wrap_command(cmd: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(cmd.as_bytes());
     format!(
-        "$global:LASTEXITCODE=0;$global:__rayo_e0=$global:Error[0];[Console]::Write([char]27+']'+$global:__rayo_n+';133;C'+[char]7);. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64}'))))\r"
+        "$global:LASTEXITCODE=0;$global:__rayo_e0=$global:Error[0];[Console]::Write([char]27+'[2J'+[char]27+'[3J'+[char]27+'[H'+[char]27+']'+$global:__rayo_n+';133;C'+[char]7);. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64}'))))\r"
     )
 }
 
@@ -638,7 +640,7 @@ mod tests {
     #[test]
     fn wrapped_command_roundtrips_base64() {
         let w = wrap_command("echo 'a b'\nls");
-        let b64 = w.split('\'').nth(5).unwrap();
+        let b64 = w.split("FromBase64String('").nth(1).unwrap().split('\'').next().unwrap();
         let dec = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .unwrap();

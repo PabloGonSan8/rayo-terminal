@@ -4,7 +4,7 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 
 **English** · [Español](#español)
 
-## [Unreleased]
+## [0.2.0] — 2026-11-23
 
 ### Security
 
@@ -15,6 +15,7 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 
 ### Fixed
 
+- Resizing the window while a command runs (Claude Code, long builds…) no longer shifts the block: pieces of Rayo's internal command line no longer show up, and the first lines (e.g. the top of a table) are no longer cut off.
 - A crash in one pane's I/O thread no longer takes down the whole window: locks survive it and the pane is closed.
 - A shell that exits right after starting (wrong program or arguments, broken profile) stays open with its error and a message, instead of vanishing.
 - The last output of a shell that exits is no longer lost.
@@ -77,7 +78,7 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 
 ## Español
 
-## [Sin publicar]
+## [0.2.0] — 2026-11-23
 
 ### Seguridad
 
@@ -88,6 +89,7 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 
 ### Arreglado
 
+- Redimensionar la ventana con un comando en marcha (Claude Code, compilaciones largas…) ya no descoloca el bloque: no aparecen trozos de la línea interna de Rayo ni se cortan las primeras líneas (p. ej. la parte de arriba de una tabla).
 - Un fallo en el hilo de E/S de un panel ya no cierra la ventana entera: los bloqueos lo aguantan y se cierra solo ese panel.
 - Un shell que se cierra nada más arrancar (programa o argumentos erróneos, perfil roto) se queda abierto con su error y un aviso, en vez de desaparecer.
 - Ya no se pierde la última salida de un shell que termina.
@@ -146,4 +148,5 @@ O descarga `rayo.exe` abajo y ábrelo. Windows puede mostrar un aviso de SmartSc
 - Rayo no se puede elegir como aplicación de terminal predeterminada de Windows 11.
 - Los bloques de comandos necesitan PowerShell. cmd, WSL y Git Bash funcionan como terminal clásica.
 
+[0.2.0]: https://github.com/PabloGonSan8/rayo-terminal/releases/tag/v0.2.0
 [0.1.0]: https://github.com/PabloGonSan8/rayo-terminal/releases/tag/v0.1.0

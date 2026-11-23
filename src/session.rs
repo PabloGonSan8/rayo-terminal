@@ -251,7 +251,11 @@ impl Shared {
                 }
             }
             Mark::Exec => {
-                let abs = self.cursor_abs();
+                // The wrapper clears screen and scrollback right before this mark, so the
+                // output starts at the top of the screen (line 0 once the scrollback is gone).
+                // Not the cursor: ConPTY sends the cursor home later, in its repaint, and an
+                // offset below the command's echo would move whenever a resize re-wraps it.
+                let abs = self.term.grid().history_size();
                 if let Some(b) = self
                     .blocks
                     .back_mut()
@@ -282,11 +286,6 @@ impl Shared {
                 }
             }
         }
-    }
-
-    fn cursor_abs(&self) -> usize {
-        let g = self.term.grid();
-        (g.history_size() as i32 + g.cursor.point.line.0).max(0) as usize
     }
 
     /// Mirror lines [start, end) holding the running block's output.
@@ -539,8 +538,9 @@ mod tests {
             s.phase = Phase::Running;
         };
         push(&mut s, "ls");
-        // Echo of the wrapped line, then real output in red, then the prompt.
-        feed(&mut s, &mut p, &mut sc, &shell::with_nonce(b"$global:LASTEXITCODE=0;...\r\n\x1b]133;C\x07one\r\n\x1b[31mtwo\x1b[0m\r\n\x1b]133;D;3\x07\x1b[2J\x1b[H\x1b]133;B\x07"));
+        // Echo of the wrapped line, the wrapper's clear, the mark, ConPTY homing the cursor,
+        // then real output in red, then the prompt.
+        feed(&mut s, &mut p, &mut sc, &shell::with_nonce(b"$global:LASTEXITCODE=0;...\r\n\x1b[2J\x1b[3J\x1b]133;C\x07\x1b[Hone\r\n\x1b[31mtwo\x1b[0m\r\n\x1b]133;D;3\x07\x1b[2J\x1b[H\x1b]133;B\x07"));
         let b = &s.blocks[0];
         assert_eq!(b.code, Some(3));
         assert_eq!(b.output_text(), "one\ntwo");
@@ -554,7 +554,7 @@ mod tests {
                 &mut s,
                 &mut p,
                 &mut sc,
-                &shell::with_nonce(b"x\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;B\x07"),
+                &shell::with_nonce(b"x\r\n\x1b[2J\x1b[3J\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;B\x07"),
             );
         }
         assert_eq!(s.blocks.len(), 2);
@@ -568,7 +568,7 @@ mod tests {
             &mut s,
             &mut p,
             &mut sc,
-            &shell::with_nonce(b"\x1b]133;C\x071\r\n2\r\n3\r\n4\r\n\x1b]133;D;0\x07\x1b]133;B\x07"),
+            &shell::with_nonce(b"\x1b[2J\x1b[3J\x1b]133;C\x07\x1b[H1\r\n2\r\n3\r\n4\r\n\x1b]133;D;0\x07\x1b]133;B\x07"),
         );
         assert_eq!(s.blocks.len(), 1);
         assert_eq!(s.blocks[0].output_text(), "1\n2\n3\n4");
@@ -578,13 +578,58 @@ mod tests {
     /// ready, runs a submitted command and the block gets its output and exit code.
     #[test]
     fn powershell_block_over_conpty() {
-        let wait = |shared: &Mutex<Shared>, what: &str, ok: &dyn Fn(&Shared) -> bool| {
-            let t0 = Instant::now();
-            while !ok(&shared.locked()) {
-                assert!(t0.elapsed().as_secs() < 30, "timed out waiting for {what}");
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        };
+        let (shared, io) = start_powershell(100, 30);
+        wait(&shared, "ready", &|s| s.phase == Phase::Ready);
+        assert!(s_cwd(&shared).is_some(), "integration reports the cwd");
+        submit(&shared, &io, "Write-Output 'hola rayo'; cmd /c exit 3");
+        wait(&shared, "block end", &|s| s.blocks.back().is_some_and(|b| !b.running()));
+        let s = shared.locked();
+        let b = s.blocks.back().unwrap();
+        assert_eq!(b.code, Some(3));
+        assert!(b.output_text().contains("hola rayo"), "output: {:?}", b.output_text());
+        assert!(!b.output_text().contains("LASTEXITCODE"), "wrapper echo leaked into the block");
+    }
+
+    /// Resizing while a command runs (what TUIs like Claude Code live through) must not
+    /// shift where the block's output starts: no wrapper echo, no lost first lines.
+    #[test]
+    fn resize_during_command_keeps_output_start() {
+        let (shared, io) = start_powershell(100, 30);
+        wait(&shared, "ready", &|s| s.phase == Phase::Ready);
+        submit(
+            &shared,
+            &io,
+            "Write-Output 'primera'; Start-Sleep -Milliseconds 2500; Write-Output 'ultima'",
+        );
+        wait(&shared, "first line", &|s| {
+            let (a, b) = s.output_lines(false);
+            (a..b).any(|l| row_text(&row_runs(&s.term, Line(l))).contains("primera"))
+        });
+        let (cols, rows) = (30, 30);
+        shared.locked().term.resize(TermSize::new(cols, rows));
+        io.send(Msg::Resize(WindowSize {
+            num_lines: rows as u16,
+            num_cols: cols as u16,
+            cell_width: 8,
+            cell_height: 16,
+        }));
+        wait(&shared, "block end", &|s| s.blocks.back().is_some_and(|b| !b.running()));
+        let s = shared.locked();
+        let out = s.blocks.back().unwrap().output_text();
+        let lines: Vec<&str> = out.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines, ["primera", "ultima"], "output: {out:?}");
+    }
+
+    fn wait(shared: &Mutex<Shared>, what: &str, ok: &dyn Fn(&Shared) -> bool) {
+        let t0 = Instant::now();
+        while !ok(&shared.locked()) {
+            assert!(t0.elapsed().as_secs() < 30, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Windows PowerShell with Rayo's integration on a real ConPTY.
+    fn start_powershell(cols: usize, rows: usize) -> (Arc<Mutex<Shared>>, Handle) {
         let (tx, _rx) = mpsc::channel();
         let waker = Waker {
             ctx: egui::Context::default(),
@@ -594,7 +639,7 @@ mod tests {
             tx,
             waker: waker.clone(),
         };
-        let term = Term::new(Default::default(), &TermSize::new(100, 30), listener);
+        let term = Term::new(Default::default(), &TermSize::new(cols, rows), listener);
         let mut args = vec!["-NoLogo".to_string(), "-NoProfile".to_string()];
         args.extend(shell::integration_args());
         let opts = tty::Options {
@@ -605,24 +650,15 @@ mod tests {
             escape_args: true,
         };
         let ws = WindowSize {
-            num_lines: 30,
-            num_cols: 100,
+            num_lines: rows as u16,
+            num_cols: cols as u16,
             cell_width: 8,
             cell_height: 16,
         };
         let pty = tty::new(&opts, ws, 0).unwrap();
         let shared = Arc::new(Mutex::new(Shared::new(term, 10)));
         let io = spawn(pty, shared.clone(), waker).unwrap();
-
-        wait(&shared, "ready", &|s| s.phase == Phase::Ready);
-        assert!(s_cwd(&shared).is_some(), "integration reports the cwd");
-        submit(&shared, &io, "Write-Output 'hola rayo'; cmd /c exit 3");
-        wait(&shared, "block end", &|s| s.blocks.back().is_some_and(|b| !b.running()));
-        let s = shared.locked();
-        let b = s.blocks.back().unwrap();
-        assert_eq!(b.code, Some(3));
-        assert!(b.output_text().contains("hola rayo"), "output: {:?}", b.output_text());
-        assert!(!b.output_text().contains("LASTEXITCODE"), "wrapper echo leaked into the block");
+        (shared, io)
     }
 
     /// A shell that exits right away: its last output is drained and its code kept,
