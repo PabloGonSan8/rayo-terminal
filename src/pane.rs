@@ -16,7 +16,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 use egui::{Align2, Color32, FontId, Id, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::config::{self, Config, CursorStyle};
-use crate::session::{self, Handle, Listener, Msg, Phase, Row, Shared};
+use crate::session::{self, Handle, Listener, LockExt as _, Msg, Phase, Row, Shared};
 use crate::shell;
 use crate::theme::Theme;
 
@@ -52,6 +52,8 @@ pub struct Editor {
     pub cursor: usize,
     pub has_selection: bool,
     pub set_cursor_end: bool,
+    /// With `set_cursor_end`: put the cursor here (char index) instead of the end.
+    pub cursor_to: Option<usize>,
     /// (cwd, git branch) cache for the context line.
     pub branch: Option<(String, Option<String>)>,
     /// Enter pressed before the shell was ready: run as soon as it is.
@@ -106,6 +108,8 @@ pub struct Pane {
     job: Option<crate::procs::Job>,
     /// Ctrl+C was sent; when the shell is back, clean up orphaned children.
     reap_after_interrupt: Cell<bool>,
+    /// Shell died right after starting: kept open (not auto-closed) to show its error.
+    pub kept: bool,
 }
 
 type BlockPos = (usize, usize, usize);
@@ -184,7 +188,22 @@ impl Pane {
             shell_pid,
             job: shell_pid.and_then(crate::procs::Job::for_process),
             reap_after_interrupt: Cell::new(false),
+            kept: false,
         })
+    }
+
+    /// Started less than a few seconds ago (an exit now means it failed to start).
+    pub fn just_started(&self) -> bool {
+        self.spawned.elapsed() < Duration::from_secs(4)
+    }
+
+    pub fn exit_code(&self) -> Option<i32> {
+        self.shared.locked().exit_code
+    }
+
+    /// A command is running (closing would kill it).
+    pub fn busy(&self) -> bool {
+        !self.exited && self.shared.locked().running()
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
@@ -215,7 +234,7 @@ impl Pane {
                 _ => {}
             }
         }
-        let s = self.shared.lock().unwrap();
+        let s = self.shared.locked();
         self.exited |= s.exited;
         // `pnpm dev` & co: the .cmd wrapper dies on Ctrl+C but node may survive,
         // still writing to this console. The shell is back, so end the leftovers.
@@ -232,16 +251,16 @@ impl Pane {
         {
             drop(s);
             self.integrated = false;
-            self.shared.lock().unwrap().phase = Phase::Ready;
+            self.shared.locked().phase = Phase::Ready;
         }
     }
 
     pub fn phase(&self) -> Phase {
-        self.shared.lock().unwrap().phase
+        self.shared.locked().phase
     }
 
     pub fn view(&self) -> View {
-        let s = self.shared.lock().unwrap();
+        let s = self.shared.locked();
         if !self.integrated || s.term.mode().contains(TermMode::ALT_SCREEN) {
             View::Terminal
         } else {
@@ -255,7 +274,7 @@ impl Pane {
     }
 
     pub fn cwd(&self) -> Option<String> {
-        self.shared.lock().unwrap().cwd.clone()
+        self.shared.locked().cwd.clone()
     }
 
     pub fn submit(&mut self, cmd: &str) {
@@ -263,7 +282,7 @@ impl Pane {
     }
 
     pub fn interrupt(&self) {
-        let mut s = self.shared.lock().unwrap();
+        let mut s = self.shared.locked();
         if let Some(b) = s.blocks.back_mut().filter(|b| b.running()) {
             b.interrupted = true;
         }
@@ -274,7 +293,7 @@ impl Pane {
 
     pub fn clear_blocks(&self) {
         self.sel.set(None);
-        self.shared.lock().unwrap().blocks.retain(|b| b.running());
+        self.shared.locked().blocks.retain(|b| b.running());
     }
 
     fn window_size(&self) -> WindowSize {
@@ -315,7 +334,7 @@ impl Pane {
     }
 
     pub fn mode(&self) -> TermMode {
-        *self.shared.lock().unwrap().term.mode()
+        *self.shared.locked().term.mode()
     }
 
     /// Mouse wheel for apps that enabled mouse reporting (opencode, htop, vim with
@@ -342,7 +361,7 @@ impl Pane {
     }
 
     pub fn scroll_page(&self, up: bool) {
-        self.shared.lock().unwrap().term.scroll_display(if up {
+        self.shared.locked().term.scroll_display(if up {
             Scroll::PageUp
         } else {
             Scroll::PageDown
@@ -353,7 +372,7 @@ impl Pane {
     /// Returns the screen rect to underline and the target.
     pub fn link_at(&self, pos: Pos2) -> Option<(Rect, String)> {
         let (p, _) = self.point_at(pos);
-        let s = self.shared.lock().unwrap();
+        let s = self.shared.locked();
         let (c0, c1, url) = match s.term.grid()[p].hyperlink() {
             Some(h) => (p.column.0, p.column.0 + 1, h.uri().to_string()),
             None => shell::url_at(
@@ -371,7 +390,7 @@ impl Pane {
 
     /// Selected text: block view selection first, then the terminal grid's.
     pub fn copy_selection(&self) -> Option<String> {
-        let s = self.shared.lock().unwrap();
+        let s = self.shared.locked();
         if let Some((a, z)) = self.sel.get() {
             let (a, z) = (a.min(z), a.max(z));
             return Some(selection_text(&s, a, z)).filter(|t| !t.is_empty());
@@ -381,7 +400,7 @@ impl Pane {
 
     pub fn clear_selection(&self) {
         self.sel.set(None);
-        self.shared.lock().unwrap().term.selection = None;
+        self.shared.locked().term.selection = None;
     }
 
     pub fn paste(&self, text: &str) {
@@ -409,18 +428,18 @@ impl Pane {
         };
         let col = (col as usize).min(self.size.0.saturating_sub(1));
         let row = row.min(self.size.1.saturating_sub(1));
-        let offset = self.shared.lock().unwrap().term.grid().display_offset() as i32;
+        let offset = self.shared.locked().term.grid().display_offset() as i32;
         (Point::new(Line(row as i32 - offset), Column(col)), side)
     }
 
     pub fn select_start(&self, pos: Pos2, kind: SelectionType) {
         let (p, side) = self.point_at(pos);
-        self.shared.lock().unwrap().term.selection = Some(Selection::new(kind, p, side));
+        self.shared.locked().term.selection = Some(Selection::new(kind, p, side));
     }
 
     pub fn select_update(&self, pos: Pos2) {
         let (p, side) = self.point_at(pos);
-        if let Some(sel) = self.shared.lock().unwrap().term.selection.as_mut() {
+        if let Some(sel) = self.shared.locked().term.selection.as_mut() {
             sel.update(p, side);
         }
     }
@@ -438,7 +457,7 @@ impl Pane {
         blink_on: bool,
     ) {
         self.origin = rect.min;
-        let s = self.shared.lock().unwrap();
+        let s = self.shared.locked();
         let term = &s.term;
         let content = term.renderable_content();
         let colors = content.colors;
@@ -565,7 +584,7 @@ impl Pane {
         const PAD: f32 = 10.0;
         const HEADER: f32 = 18.0;
         let shared = self.shared.clone();
-        let s = shared.lock().unwrap();
+        let s = shared.locked();
         let live = s.output_lines(true);
         let rows_of = |b: &session::Block| {
             if b.running() {

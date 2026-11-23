@@ -5,13 +5,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Agent name if `s` (a command line or window title) looks like one.
 pub fn detect(s: &str) -> Option<&'static str> {
     let s = s.to_lowercase();
-    // Title set by Claude Code ("✳ Claude Code"), or the command typed.
-    if s.contains("claude") {
+    // Title set by Claude Code ("✳ Claude Code"). Any other text only counts by its
+    // first word: `cd claude-notes` is not an agent.
+    if s.contains("claude code") {
         return Some("Claude Code");
     }
     let first = s.split_whitespace().next()?;
     let first = first.rsplit(['\\', '/']).next()?.trim_end_matches(".exe").trim_end_matches(".cmd");
     Some(match first {
+        "claude" => "Claude Code",
         "codex" => "Codex",
         "gemini" => "Gemini CLI",
         "aider" => "Aider",
@@ -81,9 +83,11 @@ pub fn claude_usage() -> Usage {
         if !fresh || f.path().extension().is_none_or(|e| e != "jsonl") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
-        for line in text.lines().filter(|l| l.contains("\"usage\"")) {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        // Line by line: long sessions make logs of hundreds of MB.
+        let Ok(file) = std::fs::File::open(f.path()) else { continue };
+        let lines = std::io::BufRead::lines(std::io::BufReader::new(file)).map_while(Result::ok);
+        for line in lines.filter(|l| l.contains("\"usage\"")) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
             let ts = v["timestamp"].as_str().unwrap_or_default();
             if ts < cut_7d.as_str() {
                 continue;
@@ -179,6 +183,8 @@ mod tests {
         assert_eq!(detect("✳ Claude Code"), Some("Claude Code"));
         assert_eq!(detect("C:\\bin\\codex.exe exec"), Some("Codex"));
         assert_eq!(detect("cargo build"), None);
+        assert_eq!(detect("cd claude-notes"), None);
+        assert_eq!(detect("code ~/.claude"), None);
         assert_eq!(short(1_500), "1.5k");
     }
 

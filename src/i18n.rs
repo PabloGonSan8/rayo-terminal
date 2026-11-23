@@ -242,6 +242,20 @@ const EN: &[(&str, &str)] = &[
     ("Editar de nuevo", "Edit again"),
     ("Ejecutando…", "Running…"),
     ("No se pudo descargar la actualización", "Couldn't download the update"),
+    // Window controls
+    ("Cerrar", "Close"),
+    ("Restaurar", "Restore"),
+    ("Maximizar", "Maximize"),
+    ("Minimizar", "Minimize"),
+    // Close confirmation
+    ("Cancelar", "Cancel"),
+    ("¿Cerrar con comandos en ejecución?", "Close with commands still running?"),
+    ("Confirmar al cerrar", "Confirm on close"),
+    (
+        "Pregunta antes de cerrar si hay un comando en marcha",
+        "Ask before closing while a command is running",
+    ),
+    ("Integrada", "Built-in"),
 ];
 
 #[cfg(test)]

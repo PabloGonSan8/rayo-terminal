@@ -4,6 +4,36 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 
 **English** · [Español](#español)
 
+## [Unreleased]
+
+### Security
+
+- The in-app updater verifies the SHA-256 of the downloaded exe against `rayo.exe.sha256` from the release, and refuses releases without it.
+- `install.ps1` verifies the same checksum (it only warns for v0.1.0, which predates the file).
+- Releases are built with `--locked` and carry a build provenance attestation (`gh attestation verify`).
+
+### Fixed
+
+- A crash in one pane's I/O thread no longer takes down the whole window: locks survive it and the pane is closed.
+- A shell that exits right after starting (wrong program or arguments, broken profile) stays open with its error and a message, instead of vanishing.
+- The last output of a shell that exits is no longer lost.
+- An invalid `config.toml` is copied to `config.invalid.toml` before anything can overwrite it, and Rayo says so.
+- `config.toml` and the session are written atomically; settings are saved once a change settles, not on every frame of a slider drag.
+- `history.txt` no longer grows forever: it is trimmed back to the last 5000 commands.
+- Ctrl+Shift+V in the editor pastes at the cursor, not at the end.
+- Agent detection no longer matches commands like `cd claude-notes`.
+- Claude Code usage is read line by line (big logs) and only one scan runs at a time.
+- Several tooltips (window buttons, update, close pane, shortcuts) were Spanish-only.
+- Fonts are looked up in `%WINDIR%\Fonts`; Git Bash is also found in per-user installs.
+
+### Added
+
+- Closing a pane, tab or the window while a command runs asks first (Settings → Terminal → Confirm on close).
+- Commands starting with a space are not saved to the history.
+- Panics are written to `%APPDATA%\rayo\crash.log`.
+- The exe has version information (Explorer → Properties → Details).
+- End-to-end tests over a real ConPTY (PowerShell block with exit code, shell exit).
+
 ## [0.1.0] — 2026-11-23
 
 First public release. A fast, lightweight terminal for Windows 10 (1809+) / 11, written in Rust. No AI built in and no account needed.
@@ -41,6 +71,36 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 ---
 
 ## Español
+
+## [Sin publicar]
+
+### Seguridad
+
+- El actualizador comprueba el SHA-256 del exe descargado con el `rayo.exe.sha256` de la versión y rechaza las versiones que no lo traen.
+- `install.ps1` comprueba la misma suma (con v0.1.0, que no la tiene, solo avisa).
+- Las versiones se compilan con `--locked` y llevan una atestación de procedencia del build (`gh attestation verify`).
+
+### Arreglado
+
+- Un fallo en el hilo de E/S de un panel ya no cierra la ventana entera: los bloqueos lo aguantan y se cierra solo ese panel.
+- Un shell que se cierra nada más arrancar (programa o argumentos erróneos, perfil roto) se queda abierto con su error y un aviso, en vez de desaparecer.
+- Ya no se pierde la última salida de un shell que termina.
+- Un `config.toml` inválido se copia a `config.invalid.toml` antes de que nada lo sobrescriba, y Rayo avisa.
+- `config.toml` y la sesión se escriben de forma atómica; los ajustes se guardan cuando el cambio se estabiliza, no en cada frame al arrastrar un deslizador.
+- `history.txt` ya no crece sin límite: se recorta a los últimos 5000 comandos.
+- Ctrl+Shift+V en el editor pega en el cursor, no al final.
+- La detección de agentes ya no reconoce comandos como `cd claude-notes`.
+- El uso de Claude Code se lee línea a línea (registros grandes) y solo corre un cálculo a la vez.
+- Varias ayudas emergentes (botones de ventana, actualizar, cerrar panel, atajos) solo estaban en español.
+- Las fuentes se buscan en `%WINDIR%\Fonts`; Git Bash también se encuentra en instalaciones por usuario.
+
+### Añadido
+
+- Cerrar un panel, una pestaña o la ventana con un comando en marcha pide confirmación (Ajustes → Terminal → Confirmar al cerrar).
+- Los comandos que empiezan por espacio no se guardan en el historial.
+- Los errores fatales se escriben en `%APPDATA%\rayo\crash.log`.
+- El exe lleva información de versión (Explorador → Propiedades → Detalles).
+- Tests de extremo a extremo sobre ConPTY real (bloque de PowerShell con código de salida, salida del shell).
 
 ## [0.1.0] — 2026-11-23
 

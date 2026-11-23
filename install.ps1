@@ -40,6 +40,26 @@
         $url = "https://github.com/$repo/releases/latest/download/rayo.exe"
         Say "Descargando $url" "Downloading $url"
         Invoke-WebRequest $url -OutFile $new -UseBasicParsing
+        # Verify against the SHA-256 the release workflow publishes next to the exe.
+        # ponytail: v0.1.0 has no .sha256, so a missing file only warns;
+        # make it fatal once v0.1.0 is no longer the latest release.
+        $sum = $null
+        try {
+            $sum = (Invoke-WebRequest "$url.sha256" -UseBasicParsing).Content
+        } catch {
+            Say 'Aviso: esta versión no publica suma SHA-256; no se puede verificar.' `
+                'Warning: this release has no SHA-256 file; it cannot be verified.' Yellow
+        }
+        if ($sum) {
+            if ($sum -is [byte[]]) { $sum = [Text.Encoding]::ASCII.GetString($sum) }
+            $want = ($sum -split '\s+')[0].ToLower()
+            $got = (Get-FileHash $new -Algorithm SHA256).Hash.ToLower()
+            if ($want -ne $got) {
+                Remove-Item $new -Force
+                throw "SHA-256 mismatch: expected $want, got $got. Nothing was installed."
+            }
+            Say 'SHA-256 verificado.' 'SHA-256 verified.' Green
+        }
         try {
             $version = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name.TrimStart('v')
         } catch { $version = '' }

@@ -65,6 +65,8 @@ pub struct Config {
     pub max_blocks: usize,
     pub copy_on_select: bool,
     pub right_click_paste: bool,
+    /// Ask before closing a pane / tab / the window while a command runs.
+    pub confirm_close: bool,
     pub colors: TextColors,
     /// Shortcut bindings: action id -> "Ctrl+Shift+D" (empty = unassigned).
     pub keys: std::collections::BTreeMap<String, String>,
@@ -102,6 +104,7 @@ impl Default for Config {
             max_blocks: 1000,
             copy_on_select: false,
             right_click_paste: true,
+            confirm_close: true,
             colors: TextColors::default(),
             keys: crate::keys::defaults(),
         }
@@ -148,29 +151,47 @@ impl Config {
             .join("config.toml")
     }
 
-    pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|s| toml::from_str::<Config>(&s).ok())
-            .map(|mut c| {
-                // Themes get renamed; fall back instead of showing a stale name.
+    /// Settings from disk. A file that doesn't parse is copied to `config.invalid.toml`
+    /// (the next save would otherwise overwrite the user's hand edits) and the error is
+    /// returned so the UI can say so.
+    pub fn load() -> (Self, Option<String>) {
+        let path = Self::path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return (Self::default(), None);
+        };
+        match toml::from_str::<Config>(&text) {
+            Ok(mut c) => {
                 crate::keys::migrate(&mut c.keys);
+                // Themes get renamed; fall back instead of showing a stale name.
                 if !crate::theme::THEMES.iter().any(|t| t.name == c.theme) {
                     c.theme = Config::default().theme;
                 }
-                c
-            })
-            .unwrap_or_default()
+                (c, None)
+            }
+            Err(e) => {
+                let backup = path.with_file_name("config.invalid.toml");
+                let _ = std::fs::copy(&path, &backup);
+                let line = e.message().lines().next().unwrap_or_default().to_string();
+                (Self::default(), Some(format!("{line} → {}", backup.display())))
+            }
+        }
     }
 
     pub fn save(&self) {
-        let path = Self::path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
         if let Ok(s) = toml::to_string_pretty(self) {
-            let _ = std::fs::write(path, s);
+            write_atomic(&Self::path(), &s);
         }
+    }
+}
+
+/// Write then rename: a crash or full disk mid-write never leaves a half file.
+fn write_atomic(path: &std::path::Path, text: &str) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(tmp, path);
     }
 }
 
@@ -221,12 +242,7 @@ impl Session {
 
     pub fn save(&self) {
         if let Ok(s) = toml::to_string_pretty(self) {
-            let _ = std::fs::create_dir_all(Config::path().parent().unwrap_or(&PathBuf::from(".")));
-            // Write then rename: a crash mid-write never leaves a broken session.
-            let tmp = Self::path().with_extension("tmp");
-            if std::fs::write(&tmp, s).is_ok() {
-                let _ = std::fs::rename(tmp, Self::path());
-            }
+            write_atomic(&Self::path(), &s);
         }
     }
 }
@@ -235,13 +251,18 @@ fn history_path() -> PathBuf {
     Config::path().with_file_name("history.txt")
 }
 
+const HISTORY_MAX: usize = 5000;
+
 /// Command history shared by every pane (newest last). Newlines are stored as U+2028.
+/// The file is append-only while running, so it is trimmed back here once it doubles.
 pub fn load_history() -> Vec<String> {
     let s = std::fs::read_to_string(history_path()).unwrap_or_default();
-    let mut v: Vec<String> = s.lines().map(|l| l.replace('\u{2028}', "\n")).collect();
-    let n = v.len().saturating_sub(5000);
-    v.drain(..n);
-    v
+    let lines: Vec<&str> = s.lines().collect();
+    let keep = &lines[lines.len().saturating_sub(HISTORY_MAX)..];
+    if lines.len() > 2 * HISTORY_MAX {
+        write_atomic(&history_path(), &(keep.join("\n") + "\n"));
+    }
+    keep.iter().map(|l| l.replace('\u{2028}', "\n")).collect()
 }
 
 pub fn append_history(cmd: &str) {
@@ -281,14 +302,15 @@ pub fn shell_presets() -> Vec<(&'static str, String, &'static str)> {
     if which("wsl.exe") {
         v.push(("WSL", "wsl.exe".to_string(), ""));
     }
-    for p in [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ] {
-        if std::path::Path::new(p).is_file() {
-            v.push(("Git Bash", p.to_string(), "--login -i"));
-            break;
-        }
+    // Machine-wide and per-user ("Only for me") installs of Git for Windows.
+    let git_bash = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .flat_map(|r| [r.join(r"Git\bin\bash.exe"), r.join(r"Programs\Git\bin\bash.exe")])
+        .find(|p| p.is_file());
+    if let Some(p) = git_bash {
+        v.push(("Git Bash", p.to_string_lossy().into_owned(), "--login -i"));
     }
     v
 }
@@ -306,9 +328,17 @@ const FONT_FILES: &[(&str, &str)] = &[
     ("Courier New", "cour.ttf"),
 ];
 
+/// `%WINDIR%\Fonts` (Windows isn't always on C:).
+pub fn fonts_dir() -> PathBuf {
+    std::env::var_os("WINDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("Fonts")
+}
+
 pub fn font_path(name: &str) -> Option<PathBuf> {
     let file = FONT_FILES.iter().find(|(n, _)| *n == name)?.1;
-    let mut dirs = vec![PathBuf::from(r"C:\Windows\Fonts")];
+    let mut dirs = vec![fonts_dir()];
     if let Some(local) = dirs::data_local_dir() {
         dirs.push(local.join(r"Microsoft\Windows\Fonts"));
     }

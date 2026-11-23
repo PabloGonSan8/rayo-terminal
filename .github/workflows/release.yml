@@ -6,6 +6,9 @@ on:
 
 permissions:
   contents: write
+  # Build provenance attestation (`gh attestation verify rayo.exe -R PabloGonSan8/rayo-terminal`).
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -20,10 +23,22 @@ jobs:
           [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME != Cargo.toml v$v"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --locked
-      - run: cargo build --release
+      - run: cargo build --release --locked
+      # The in-app updater refuses a release without this file; install.ps1 and WinGet use it too.
+      - name: SHA-256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash target/release/rayo.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  rayo.exe" | Out-File -Encoding ascii -NoNewline target/release/rayo.exe.sha256
+          Get-Content target/release/rayo.exe.sha256
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/rayo.exe
       - uses: softprops/action-gh-release@v2
         with:
           # Keep the asset name "rayo.exe": install.ps1, the in-app updater and the website
           # (download_count) all depend on it.
-          files: target/release/rayo.exe
+          files: |
+            target/release/rayo.exe
+            target/release/rayo.exe.sha256
           generate_release_notes: true

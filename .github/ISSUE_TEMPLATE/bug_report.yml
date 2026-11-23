@@ -33,3 +33,11 @@ body:
     attributes:
       label: Shell
       placeholder: pwsh 7.5 / Windows PowerShell / cmd / WSL
+  - type: textarea
+    id: crash
+    attributes:
+      label: Crash log (if Rayo closed by itself) / Registro de fallo (si Rayo se cerró solo)
+      description: |
+        Last entry of %APPDATA%\rayo\crash.log. Check it doesn't contain anything private.
+        Última entrada de %APPDATA%\rayo\crash.log. Revisa que no tenga nada privado.
+      render: text
