@@ -220,6 +220,9 @@ pub struct Shared {
     pub phase: Phase,
     pub cwd: Option<String>,
     pub max_blocks: usize,
+    /// Most frozen output rows kept across all blocks.
+    // ponytail: counts rows, not bytes (~100 B a row → ~20 MB); bytes if it matters.
+    row_budget: usize,
     pub exited: bool,
     /// Exit code of the shell once it ended (None while running or unknown).
     pub exit_code: Option<i32>,
@@ -233,6 +236,7 @@ impl Shared {
             phase: Phase::Starting,
             cwd: None,
             max_blocks,
+            row_budget: 200_000,
             exited: false,
             exit_code: None,
         }
@@ -267,8 +271,13 @@ impl Shared {
                     b.code = Some(code);
                     b.end = Some(Instant::now());
                     self.phase = Phase::Waiting;
-                    while self.blocks.len() > self.max_blocks {
-                        self.blocks.pop_front();
+                    // Oldest blocks go first, by count and by total frozen rows (1000 blocks
+                    // of a 10k-line build log each would otherwise sit in RAM).
+                    let mut total: usize = self.blocks.iter().map(|b| b.rows.len()).sum();
+                    while self.blocks.len() > self.max_blocks
+                        || (self.blocks.len() > 1 && total > self.row_budget)
+                    {
+                        total -= self.blocks.pop_front().map_or(0, |b| b.rows.len());
                     }
                 }
             }
@@ -510,7 +519,7 @@ mod tests {
             &mut s,
             &mut p,
             &mut sc,
-            b"\x1b]133;D;0\x07\x1b[2J\x1b[H\x1b]9;9;\"C:\\w\"\x07\x1b]133;B\x07",
+            &shell::with_nonce(b"\x1b]133;D;0\x07\x1b[2J\x1b[H\x1b]9;9;\"C:\\w\"\x07\x1b]133;B\x07"),
         );
         assert_eq!(s.phase, Phase::Ready);
         assert!(s.blocks.is_empty(), "first prompt must not create a block");
@@ -531,7 +540,7 @@ mod tests {
         };
         push(&mut s, "ls");
         // Echo of the wrapped line, then real output in red, then the prompt.
-        feed(&mut s, &mut p, &mut sc, b"$global:LASTEXITCODE=0;...\r\n\x1b]133;C\x07one\r\n\x1b[31mtwo\x1b[0m\r\n\x1b]133;D;3\x07\x1b[2J\x1b[H\x1b]133;B\x07");
+        feed(&mut s, &mut p, &mut sc, &shell::with_nonce(b"$global:LASTEXITCODE=0;...\r\n\x1b]133;C\x07one\r\n\x1b[31mtwo\x1b[0m\r\n\x1b]133;D;3\x07\x1b[2J\x1b[H\x1b]133;B\x07"));
         let b = &s.blocks[0];
         assert_eq!(b.code, Some(3));
         assert_eq!(b.output_text(), "one\ntwo");
@@ -545,12 +554,24 @@ mod tests {
                 &mut s,
                 &mut p,
                 &mut sc,
-                b"x\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;B\x07",
+                &shell::with_nonce(b"x\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;B\x07"),
             );
         }
         assert_eq!(s.blocks.len(), 2);
         assert_eq!(s.blocks[0].cmd, "a");
         assert!(s.blocks[0].rows.is_empty());
+
+        // Row budget: a big block pushes older ones out, but the newest always stays.
+        s.row_budget = 3;
+        push(&mut s, "big");
+        feed(
+            &mut s,
+            &mut p,
+            &mut sc,
+            &shell::with_nonce(b"\x1b]133;C\x071\r\n2\r\n3\r\n4\r\n\x1b]133;D;0\x07\x1b]133;B\x07"),
+        );
+        assert_eq!(s.blocks.len(), 1);
+        assert_eq!(s.blocks[0].output_text(), "1\n2\n3\n4");
     }
 
     /// End to end over a real ConPTY: PowerShell with the integration script reports

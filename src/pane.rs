@@ -62,6 +62,8 @@ pub struct Editor {
     pub cand_sel: usize,
     /// Entries of the open folder / branch chip menu (read when it opens).
     pub nav: Vec<String>,
+    /// The completion list holds history matches (Ctrl+R), not paths.
+    pub hist_search: bool,
 }
 
 impl Editor {
@@ -110,6 +112,11 @@ pub struct Pane {
     reap_after_interrupt: Cell<bool>,
     /// Shell died right after starting: kept open (not auto-closed) to show its error.
     pub kept: bool,
+    was_running: bool,
+    /// A command of 10 s or more just ended (taken by the UI to flash the taskbar).
+    pub long_done: bool,
+    /// Block view: scroll this (block, row) into view on the next frame (Ctrl+F).
+    scroll_to: Cell<Option<(usize, usize)>>,
 }
 
 type BlockPos = (usize, usize, usize);
@@ -189,6 +196,9 @@ impl Pane {
             job: shell_pid.and_then(crate::procs::Job::for_process),
             reap_after_interrupt: Cell::new(false),
             kept: false,
+            was_running: false,
+            long_done: false,
+            scroll_to: Cell::new(None),
         })
     }
 
@@ -236,6 +246,13 @@ impl Pane {
         }
         let s = self.shared.locked();
         self.exited |= s.exited;
+        let running = s.phase == Phase::Running;
+        if self.was_running && !running {
+            self.long_done |= s.blocks.back().is_some_and(|b| {
+                b.end.is_some_and(|e| e - b.start >= Duration::from_secs(10))
+            });
+        }
+        self.was_running = running;
         // `pnpm dev` & co: the .cmd wrapper dies on Ctrl+C but node may survive,
         // still writing to this console. The shell is back, so end the leftovers.
         if self.reap_after_interrupt.get() && s.phase != Phase::Running {
@@ -628,6 +645,21 @@ impl Pane {
                 let now = Instant::now();
                 // Blocks sit on the editor and grow upwards, like a chat.
                 let mut y = origin.y + (vp.height() - total).max(0.0);
+                if let Some((bi, ri)) = self.scroll_to.take()
+                    && let Some(b) = s.blocks.get(bi)
+                {
+                    let top = y
+                        + heights[..bi].iter().sum::<f32>()
+                        + PAD
+                        + HEADER
+                        + cmd_lines(b) as f32 * m.cell.y
+                        + 4.0
+                        + ri as f32 * m.cell.y;
+                    ui.scroll_to_rect(
+                        Rect::from_min_size(Pos2::new(origin.x, top), Vec2::new(width, m.cell.y)),
+                        Some(egui::Align::Center),
+                    );
+                }
                 let pointer = ui.input(|i| i.pointer.hover_pos());
                 let ctrl = ui.input(|i| i.modifiers.ctrl);
                 let sel = self.sel.get().map(|(a, z)| (a.min(z), a.max(z)));
@@ -1077,6 +1109,61 @@ fn status_icon(p: &egui::Painter, icon: StatusIcon, c: Pos2, color: Color32) {
 }
 
 /// Row `i` of a block's output (live rows come straight from the terminal).
+impl Pane {
+    /// Select the next (`back`: previous) match of `q` in finished blocks' output,
+    /// counting from the current selection and wrapping, and scroll to it.
+    /// Returns (match number, total).
+    /// `stay`: the query changed, so a match at the current spot counts.
+    pub fn find(&self, q: &str, back: bool, stay: bool) -> Option<(usize, usize)> {
+        let q = fold_chars(q);
+        if q.is_empty() {
+            return None;
+        }
+        let s = self.shared.locked();
+        let mut hits: Vec<BlockPos> = vec![];
+        for (bi, b) in s.blocks.iter().enumerate().filter(|(_, b)| !b.running()) {
+            for (ri, row) in b.rows.iter().enumerate() {
+                let text = fold_chars(&session::row_text(row));
+                hits.extend(
+                    text.windows(q.len())
+                        .enumerate()
+                        .filter(|(_, w)| *w == q.as_slice())
+                        .map(|(c, _)| (bi, ri, c)),
+                );
+            }
+        }
+        let cur = self.sel.get().map(|(a, z)| a.min(z));
+        let i = pick_hit(&hits, cur, back, stay)?;
+        let (bi, ri, c) = hits[i];
+        self.sel.set(Some(((bi, ri, c), (bi, ri, c + q.len() - 1))));
+        self.scroll_to.set(Some((bi, ri)));
+        Some((i + 1, hits.len()))
+    }
+}
+
+/// Lowercase, one char per char, so match offsets stay column offsets.
+fn fold_chars(s: &str) -> Vec<char> {
+    s.chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect()
+}
+
+/// Index of the first hit after `cur` (`back`: last before), wrapping around.
+fn pick_hit(hits: &[BlockPos], cur: Option<BlockPos>, back: bool, stay: bool) -> Option<usize> {
+    if hits.is_empty() {
+        return None;
+    }
+    let Some(cur) = cur else {
+        // Nothing selected yet: start from the newest output, like a terminal's find.
+        return Some(hits.len() - 1);
+    };
+    Some(if back {
+        hits.iter().rposition(|h| *h < cur || (stay && *h == cur)).unwrap_or(hits.len() - 1)
+    } else {
+        hits.iter().position(|h| *h > cur || (stay && *h == cur)).unwrap_or(0)
+    })
+}
+
 fn block_row(s: &Shared, b: &session::Block, live_start: i32, i: usize) -> Row {
     if b.running() {
         session::row_runs(&s.term, Line(live_start + i as i32))
@@ -1279,6 +1366,18 @@ fn enter_seq(mods: Modifiers) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_picks_next_and_previous_with_wrap() {
+        let hits = [(0, 1, 0), (0, 5, 3), (2, 0, 1)];
+        assert_eq!(pick_hit(&hits, None, false, false), Some(2));
+        assert_eq!(pick_hit(&hits, Some((0, 5, 3)), false, false), Some(2));
+        assert_eq!(pick_hit(&hits, Some((0, 5, 3)), false, true), Some(1));
+        assert_eq!(pick_hit(&hits, Some((2, 0, 1)), false, false), Some(0));
+        assert_eq!(pick_hit(&hits, Some((0, 1, 0)), true, false), Some(2));
+        assert_eq!(pick_hit(&[], None, false, false), None);
+        assert_eq!(fold_chars("ÁbC"), ['á', 'b', 'c']);
+    }
 
     #[test]
     fn resize_should_wait_until_size_is_stable() {

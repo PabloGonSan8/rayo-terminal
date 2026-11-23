@@ -106,6 +106,8 @@ Todo se guarda solo en `%APPDATA%\rayo\config.toml` (botón "Abrir archivo" para
 | Cambiar pestaña | `Ctrl + Tab`, `Ctrl + 1…9` |
 | Copiar / pegar | `Ctrl + C` (con selección) / `Ctrl + V`, clic derecho |
 | Zoom de fuente | `Ctrl + =` / `Ctrl + -` / `Ctrl + 0` |
+| Buscar en el historial (editor) | `Ctrl + R` |
+| Buscar en la salida de los bloques | `Ctrl + F` |
 
 Los separadores entre paneles se arrastran con el ratón para redimensionar.
 
@@ -119,6 +121,7 @@ Los separadores entre paneles se arrastran con el ratón para redimensionar.
 - **Ligera en reposo**: renderizado OpenGL (glow), LTO; 0 % de CPU en reposo. RAM: el proceso de Rayo con una pestaña de PowerShell midió entre ~75 y ~140 MB de working set (`Get-Process rayo`, build release, Windows 11; varía según el estado de la ventana y la GPU).
 - **Cierre seguro**: cerrar un panel, una pestaña o la ventana con un comando en marcha pide confirmación (Ajustes → Terminal → Confirmar al cerrar).
 - **Historial privado**: un comando que empieza por espacio no se guarda en el historial (como `ignorespace` en bash).
+- **Aviso al terminar**: la barra de tareas parpadea cuando termina un comando de 10 s o más con Rayo en segundo plano.
 - **Registro de fallos**: si Rayo se cierra por un error, los detalles quedan en `%APPDATA%\rayo\crash.log`. Adjúntalo al reportar el bug.
 - **Sesión**: al reabrir Rayo vuelven las pestañas, los splits y la carpeta de cada panel (Ajustes → Terminal → Restaurar sesión).
 - **Autocompletado**: Tab abre la lista de carpetas/archivos (↑↓ elegir, Tab/Enter aceptar, Esc cerrar; se filtra al escribir).

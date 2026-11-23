@@ -67,6 +67,8 @@ pub struct Config {
     pub right_click_paste: bool,
     /// Ask before closing a pane / tab / the window while a command runs.
     pub confirm_close: bool,
+    /// Flash the taskbar when a command of 10 s or more ends while Rayo isn't focused.
+    pub notify_done: bool,
     pub colors: TextColors,
     /// Shortcut bindings: action id -> "Ctrl+Shift+D" (empty = unassigned).
     pub keys: std::collections::BTreeMap<String, String>,
@@ -105,6 +107,7 @@ impl Default for Config {
             copy_on_select: false,
             right_click_paste: true,
             confirm_close: true,
+            notify_done: true,
             colors: TextColors::default(),
             keys: crate::keys::defaults(),
         }

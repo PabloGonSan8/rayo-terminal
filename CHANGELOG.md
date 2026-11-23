@@ -11,6 +11,7 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 - The in-app updater verifies the SHA-256 of the downloaded exe against `rayo.exe.sha256` from the release, and refuses releases without it.
 - `install.ps1` verifies the same checksum (it only warns for v0.1.0, which predates the file).
 - Releases are built with `--locked` and carry a build provenance attestation (`gh attestation verify`).
+- Block marks carry a random per-session token, so program output (e.g. `cat` of a file with escape codes) can't fake the end of a block or change the shown folder.
 
 ### Fixed
 
@@ -33,6 +34,10 @@ All notable changes to Rayo. Format: [Keep a Changelog](https://keepachangelog.c
 - Panics are written to `%APPDATA%\rayo\crash.log`.
 - The exe has version information (Explorer → Properties → Details).
 - End-to-end tests over a real ConPTY (PowerShell block with exit code, shell exit).
+- **Ctrl+R** searches the history: every typed word must appear, newest first, in the completion list (Ctrl+R again moves down, Enter/Tab picks).
+- **Ctrl+F** finds text in the output of finished blocks: Enter next, Shift+Enter previous, Esc closes. The match is selected, so Ctrl+C copies it.
+- The taskbar flashes when a command of 10 s or more ends while Rayo isn't in front (Settings → Terminal → Notify when done).
+- Frozen block output is capped at 200 000 rows in total per pane; the oldest blocks go first.
 
 ## [0.1.0] — 2026-11-23
 
@@ -79,6 +84,7 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 - El actualizador comprueba el SHA-256 del exe descargado con el `rayo.exe.sha256` de la versión y rechaza las versiones que no lo traen.
 - `install.ps1` comprueba la misma suma (con v0.1.0, que no la tiene, solo avisa).
 - Las versiones se compilan con `--locked` y llevan una atestación de procedencia del build (`gh attestation verify`).
+- Las marcas de bloque llevan un token aleatorio por sesión: la salida de un programa (p. ej. `cat` de un archivo con secuencias de escape) ya no puede fingir el final de un bloque ni cambiar la carpeta mostrada.
 
 ### Arreglado
 
@@ -101,6 +107,10 @@ Or download `rayo.exe` below and run it. Windows may show a SmartScreen warning 
 - Los errores fatales se escriben en `%APPDATA%\rayo\crash.log`.
 - El exe lleva información de versión (Explorador → Propiedades → Detalles).
 - Tests de extremo a extremo sobre ConPTY real (bloque de PowerShell con código de salida, salida del shell).
+- **Ctrl+R** busca en el historial: deben aparecer todas las palabras escritas, del más reciente al más antiguo, en la lista de autocompletado (Ctrl+R otra vez baja, Enter/Tab elige).
+- **Ctrl+F** busca texto en la salida de los bloques terminados: Enter siguiente, Mayús+Enter anterior, Esc cierra. La coincidencia queda seleccionada, así que Ctrl+C la copia.
+- La barra de tareas parpadea cuando termina un comando de 10 s o más y Rayo no está en primer plano (Ajustes → Terminal → Avisar al terminar).
+- La salida guardada de los bloques tiene un tope de 200 000 filas en total por panel; se van primero los bloques más antiguos.
 
 ## [0.1.0] — 2026-11-23
 

@@ -377,6 +377,16 @@ struct App {
     confirm: Option<CloseReq>,
     /// Window close already confirmed: let it through.
     close_ok: bool,
+    /// Ctrl+F bar over the block view.
+    find: Option<Find>,
+}
+
+struct Find {
+    pane: u64,
+    query: String,
+    /// (match number, total) of the last search.
+    status: Option<(usize, usize)>,
+    focus: bool,
 }
 
 /// What a close button / shortcut asked to close. Tabs are named by one of their
@@ -444,6 +454,7 @@ impl App {
             ephemeral: false,
             confirm: None,
             close_ok: false,
+            find: None,
         };
         app.apply_style(ctx);
         update::cleanup();
@@ -1063,6 +1074,31 @@ impl App {
                         }
                         return;
                     }
+                    // Ctrl+R: history matching what's typed, newest first, in the
+                    // completion list. Pressed again, it moves down the list.
+                    Some(Action::Find) => {
+                        self.find = Some(Find {
+                            pane: id,
+                            query: String::new(),
+                            status: None,
+                            focus: true,
+                        });
+                        return;
+                    }
+                    Some(Action::HistorySearch) => {
+                        let (Some(p), h) = (self.panes.get_mut(&id), &self.history) else {
+                            return;
+                        };
+                        let e = &mut p.editor;
+                        if e.hist_search && !e.candidates.is_empty() {
+                            e.cand_sel = (e.cand_sel + 1) % e.candidates.len();
+                        } else {
+                            e.candidates = history_matches(h, &e.text);
+                            e.cand_sel = 0;
+                            e.hist_search = !e.candidates.is_empty();
+                        }
+                        return;
+                    }
                     Some(_) => {
                         self.shortcut(ctx, key, m);
                         return;
@@ -1087,16 +1123,20 @@ impl App {
                             return;
                         }
                         Key::Enter | Key::Tab if !m.ctrl && !m.alt => {
-                            e.text = shell::apply_completion(
-                                &e.text,
-                                &e.candidates[e.cand_sel.min(n - 1)],
-                            );
+                            let cand = &e.candidates[e.cand_sel.min(n - 1)];
+                            e.text = if e.hist_search {
+                                cand.clone()
+                            } else {
+                                shell::apply_completion(&e.text, cand)
+                            };
                             e.candidates.clear();
+                            e.hist_search = false;
                             e.set_cursor_end = true;
                             return;
                         }
                         Key::Escape => {
                             e.candidates.clear();
+                            e.hist_search = false;
                             return;
                         }
                         _ => {}
@@ -1254,6 +1294,8 @@ impl App {
                     p.scroll_page(action == Action::PageUp);
                 }
             }
+            // Only Rayo's editor searches; a process (cmd, bash, PSReadLine) keeps its own Ctrl+R.
+            Action::HistorySearch | Action::Find => return false,
         }
         true
     }
@@ -1623,7 +1665,10 @@ impl App {
                         pane.editor.text = c;
                         pane.editor.set_cursor_end = true;
                     }
-                    let take_focus = is_focus && !self.settings_open && self.renaming.is_none();
+                    let take_focus = is_focus
+                        && !self.settings_open
+                        && self.renaming.is_none()
+                        && self.find.is_none();
                     if !hide_bar {
                         editor_ui(
                             ui,
@@ -2239,6 +2284,14 @@ impl App {
                 );
                 rows.row(
                     ui,
+                    i18n::t("Avisar al terminar"),
+                    i18n::t("Parpadea en la barra de tareas cuando acaba un comando largo (10 s o más) y Rayo no está en primer plano"),
+                    |ui| {
+                        ui.checkbox(&mut cfg.notify_done, "");
+                    },
+                );
+                rows.row(
+                    ui,
                     i18n::t("Clic derecho pega"),
                     i18n::t("Con selección, el clic derecho copia"),
                     |ui| {
@@ -2558,6 +2611,74 @@ impl App {
         }
     }
 
+    /// Ctrl+F: Enter next, Shift+Enter previous, Esc closes. The match is shown as the
+    /// block selection, so Ctrl+C copies it.
+    fn find_bar(&mut self, ctx: &egui::Context) {
+        let t = self.theme();
+        let Some(f) = self.find.as_mut() else {
+            return;
+        };
+        let Some(p) = self.panes.get(&f.pane) else {
+            self.find = None;
+            return;
+        };
+        let mut close = false;
+        egui::Area::new(Id::unique("find"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(ctx.content_rect().right_top() + Vec2::new(-14.0, BAR_H + 10.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(t.bg2())
+                    .stroke(Stroke::new(1.0, t.border()))
+                    .corner_radius(8)
+                    .inner_margin(6)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let r = ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut f.query)
+                                        .desired_width(220.0)
+                                        .hint_text(i18n::t("Buscar en la salida")),
+                                )
+                                .on_hover_text(i18n::t(
+                                    "Enter: siguiente · Mayús+Enter: anterior · Esc: cerrar",
+                                ));
+                            let (enter, shift, esc) = ui.input(|i| {
+                                (
+                                    i.key_pressed(Key::Enter),
+                                    i.modifiers.shift,
+                                    i.key_pressed(Key::Escape),
+                                )
+                            });
+                            if r.changed() {
+                                f.status = p.find(&f.query, false, true);
+                            }
+                            if enter {
+                                f.status = p.find(&f.query, shift, false);
+                            }
+                            // Single-line edits drop focus on Enter: keep typing.
+                            if f.focus || enter {
+                                r.request_focus();
+                                f.focus = false;
+                            }
+                            let status = match f.status {
+                                Some((i, n)) => format!("{i}/{n}"),
+                                None if f.query.is_empty() => String::new(),
+                                None => i18n::t("Sin resultados").to_string(),
+                            };
+                            ui.label(RichText::new(status).color(t.muted()).size(12.0));
+                            if esc || ui.small_button(i18n::t("Cerrar")).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+            });
+        if close {
+            self.find = None;
+        }
+    }
+
     fn error_toast(&mut self, ctx: &egui::Context) {
         let Some(err) = self.error.clone() else {
             return;
@@ -2593,7 +2714,11 @@ impl App {
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        if self.settings_open || self.renaming.is_some() || self.confirm.is_some() {
+        if self.settings_open
+            || self.renaming.is_some()
+            || self.confirm.is_some()
+            || self.find.is_some()
+        {
             return;
         }
         // Images and dropped files become pasted paths: AI CLIs (Claude Code,
@@ -2763,6 +2888,15 @@ impl eframe::App for App {
         // Running durations tick once per second, and only while you're looking:
         // an unfocused Rayo with `pnpm dev` running draws nothing unless output arrives.
         let window_focused = ctx.input(|i| i.focused);
+        let mut long_done = false;
+        for p in self.panes.values_mut() {
+            long_done |= std::mem::take(&mut p.long_done);
+        }
+        if long_done && !window_focused && self.cfg.notify_done {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
         if window_focused
             && self
                 .panes
@@ -2815,6 +2949,7 @@ impl eframe::App for App {
         }
         self.finish_update(&ctx);
         self.agents_popover(&ctx);
+        self.find_bar(&ctx);
         self.error_toast(&ctx);
         // Window close (button, Alt+F4, taskbar): ask first if something is running.
         if ctx.input(|i| i.viewport().close_requested())
@@ -2841,8 +2976,13 @@ fn completion_popup(
     if e.candidates.is_empty() {
         return None;
     }
-    let prefix_len = shell::completion_prefix(&e.text).chars().count();
+    let prefix_len = if e.hist_search {
+        0
+    } else {
+        shell::completion_prefix(&e.text).chars().count()
+    };
     let row_h = 26.0;
+    let width = if e.hist_search { 560.0 } else { 340.0 };
     let mut chosen = None;
     egui::Area::new(Id::unique(("completion", id)))
         .order(egui::Order::Foreground)
@@ -2865,10 +3005,32 @@ fn completion_popup(
                         .max_height(row_h * 8.0)
                         .show(ui, |ui| {
                             for (i, cand) in e.candidates.iter().enumerate() {
+                                let (r, resp) =
+                                    ui.allocate_exact_size(Vec2::new(width, row_h), Sense::click());
+                                if e.hist_search {
+                                    if i == e.cand_sel {
+                                        ui.painter().rect_filled(r, 5.0, t.bg3());
+                                        resp.scroll_to_me(None);
+                                    } else if resp.hovered() {
+                                        ui.painter()
+                                            .rect_filled(r, 5.0, t.bg3().gamma_multiply(0.5));
+                                    }
+                                    // One line per entry; the painter clips what doesn't fit.
+                                    let line = cand.replace('\n', " ⏎ ");
+                                    ui.painter_at(r.shrink2(Vec2::new(10.0, 0.0))).text(
+                                        Pos2::new(r.min.x + 10.0, r.center().y),
+                                        Align2::LEFT_CENTER,
+                                        line,
+                                        m.font.clone(),
+                                        t.fg,
+                                    );
+                                    if resp.clicked() {
+                                        chosen = Some(cand.clone());
+                                    }
+                                    continue;
+                                }
                                 let dir = cand.ends_with('\\');
                                 let name = cand.trim_end_matches('\\');
-                                let (r, resp) =
-                                    ui.allocate_exact_size(Vec2::new(340.0, row_h), Sense::click());
                                 let sel = i == e.cand_sel;
                                 if sel {
                                     ui.painter().rect_filled(r, 5.0, t.bg3());
@@ -2939,6 +3101,25 @@ fn completion_popup(
                 });
         });
     chosen
+}
+
+/// History entries containing every word of `query` (any order, case and accents
+/// ignored), newest first, without repeats.
+fn history_matches(history: &[String], query: &str) -> Vec<String> {
+    // ponytail: linear scan of ≤10k lines per keystroke; index it if it ever shows in a profile.
+    let words: Vec<String> = fold(query).split_whitespace().map(str::to_string).collect();
+    let mut seen = std::collections::HashSet::new();
+    history
+        .iter()
+        .rev()
+        .filter(|h| {
+            let h = fold(h);
+            words.iter().all(|w| h.contains(w.as_str()))
+        })
+        .filter(|h| seen.insert(h.as_str()))
+        .take(50)
+        .cloned()
+        .collect()
 }
 
 /// Newest history entry extending `text` (single-line input only).
@@ -3159,7 +3340,11 @@ fn editor_ui(
     if out.response.changed() {
         e.hist = None;
         // Typing with the list open filters it live.
-        if !e.candidates.is_empty() {
+        if e.hist_search {
+            e.candidates = history_matches(history, &e.text);
+            e.cand_sel = 0;
+            e.hist_search = !e.candidates.is_empty();
+        } else if !e.candidates.is_empty() {
             e.candidates = shell::path_candidates(&e.text, &cwd);
             e.cand_sel = 0;
         }
@@ -3172,8 +3357,13 @@ fn editor_ui(
         t,
         m,
     ) {
-        e.text = shell::apply_completion(&e.text, &chosen);
+        e.text = if e.hist_search {
+            chosen
+        } else {
+            shell::apply_completion(&e.text, &chosen)
+        };
         e.candidates.clear();
+        e.hist_search = false;
         e.set_cursor_end = true;
     }
     if e.set_cursor_end {
@@ -3271,6 +3461,17 @@ mod tests {
         let root = root.remove(1).unwrap();
         assert!(matches!(root, Node::Leaf(3)));
         assert!(root.remove(3).is_none());
+    }
+
+    #[test]
+    fn history_search_matches_words_newest_first() {
+        let h: Vec<String> = ["git status", "cargo test", "git push origin", "git status", "ls"]
+            .map(String::from)
+            .into();
+        assert_eq!(history_matches(&h, "git"), ["git status", "git push origin"]);
+        assert_eq!(history_matches(&h, "ORIGIN git"), ["git push origin"]);
+        assert_eq!(history_matches(&h, "").len(), 4);
+        assert!(history_matches(&h, "npm").is_empty());
     }
 
     #[test]

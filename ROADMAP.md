@@ -32,9 +32,9 @@ without an account, a Ctrl+C that really cleans up (Job Objects), one light `.ex
 
 | Feature | Value | Effort | Perf. impact | Differentiation |
 |---|---|---|---|---|
-| Ctrl+F search in output / blocks | High | Medium | None | Low (expected) |
-| Ctrl+R fuzzy history search | High | Low | None | Medium |
-| Notify when a long command ends or an agent waits for input | High | Low | None | **High** |
+| ✅ Ctrl+F search in block output (not yet in the full-screen terminal view) | High | Medium | None | Low (expected) |
+| ✅ Ctrl+R history search (all words, any order) | High | Low | None | Medium |
+| ✅ Taskbar flash when a long command ends · ⏳ when an agent waits for input | High | Low | None | **High** |
 | Blocks for bash/zsh (WSL, Git Bash) via OSC 133 | High | Medium | None | High |
 | Profiles + shell menu on "+" | High | Medium | None | Low |
 | Any installed font / Nerd Fonts, CJK fallback | Medium-high | Medium | Low | Low |
@@ -50,8 +50,8 @@ without an account, a Ctrl+C that really cleans up (Job Objects), one light `.ex
 - **Measure** frame time under heavy output (`cat` of 50 MB, `cargo build`). If the UI stalls,
   switch `Shared` to `alacritty_terminal::sync::FairMutex` or parse in smaller slices
   (`session.rs`). No change without a measurement.
-- Memory budget for frozen blocks (1000 blocks × up to 10k rows today).
-- Nonce in the OSC 133 / 9;9 marks so program output can't fake a block end or cwd.
+- ✅ Memory budget for frozen blocks (200k rows per pane, oldest first).
+- ✅ Nonce in the OSC 133 / 9;9 marks so program output can't fake a block end or cwd.
 - Split `main.rs` (3k lines) into `layout.rs`, `settings.rs`, `editor.rs`: a mechanical move,
   no behaviour change, easier first PRs.
 - Busy detection for non-PowerShell panes (job processes besides the shell) for close confirmation.
@@ -96,9 +96,9 @@ Bloques sin cuenta, un Ctrl+C que de verdad limpia (Job Objects), un único `.ex
 
 | Función | Valor | Esfuerzo | Impacto en rendimiento | Diferenciación |
 |---|---|---|---|---|
-| Ctrl+F en la salida / bloques | Alto | Medio | Nulo | Baja (se espera) |
-| Ctrl+R: búsqueda difusa en el historial | Alto | Bajo | Nulo | Media |
-| Aviso al acabar un comando largo o cuando un agente espera | Alto | Bajo | Nulo | **Alta** |
+| ✅ Ctrl+F en la salida de los bloques (aún no en la vista de terminal completa) | Alto | Medio | Nulo | Baja (se espera) |
+| ✅ Ctrl+R: búsqueda en el historial (todas las palabras, en cualquier orden) | Alto | Bajo | Nulo | Media |
+| ✅ Parpadeo en la barra de tareas al acabar un comando largo · ⏳ cuando un agente espera | Alto | Bajo | Nulo | **Alta** |
 | Bloques en bash/zsh (WSL, Git Bash) con OSC 133 | Alto | Medio | Nulo | Alta |
 | Perfiles y menú de shells en "+" | Alto | Medio | Nulo | Baja |
 | Cualquier fuente instalada / Nerd Fonts, fallback CJK | Medio-alto | Medio | Bajo | Baja |
@@ -114,8 +114,8 @@ Bloques sin cuenta, un Ctrl+C que de verdad limpia (Job Objects), un único `.ex
 - **Medir** el tiempo de frame con mucha salida (`cat` de 50 MB, `cargo build`). Si la UI se
   atasca, pasar `Shared` a `alacritty_terminal::sync::FairMutex` o procesar en trozos más
   pequeños (`session.rs`). Ningún cambio sin medición.
-- Presupuesto de memoria para los bloques terminados (hoy 1000 bloques × hasta 10k filas).
-- Nonce en las marcas OSC 133 / 9;9 para que la salida de un programa no pueda falsear un fin de bloque o el cwd.
+- ✅ Presupuesto de memoria para los bloques terminados (200k filas por panel, primero los más antiguos).
+- ✅ Nonce en las marcas OSC 133 / 9;9 para que la salida de un programa no pueda falsear un fin de bloque o el cwd.
 - Dividir `main.rs` (3k líneas) en `layout.rs`, `settings.rs`, `editor.rs`: movimiento mecánico,
   sin cambiar comportamiento, primeros PRs más fáciles.
 - Detectar comandos en marcha en paneles que no son PowerShell (procesos del job aparte del shell) para la confirmación al cerrar.

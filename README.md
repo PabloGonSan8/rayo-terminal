@@ -105,6 +105,8 @@ Everything is saved automatically to `%APPDATA%\rayo\config.toml` ("Open file" b
 | Switch tab | `Ctrl + Tab`, `Ctrl + 1…9` |
 | Copy / paste | `Ctrl + C` (with selection) / `Ctrl + V`, right click |
 | Font zoom | `Ctrl + =` / `Ctrl + -` / `Ctrl + 0` |
+| Search history (editor) | `Ctrl + R` |
+| Find in block output | `Ctrl + F` |
 
 Drag the dividers between panes to resize them. Shortcuts are editable in Settings → Shortcuts.
 
@@ -117,6 +119,7 @@ Drag the dividers between panes to resize them. Shortcuts are editable in Settin
 - **Light at rest**: OpenGL rendering, LTO; 0 % CPU when idle. RAM: the Rayo process with one PowerShell tab measured between ~75 and ~140 MB working set (`Get-Process rayo`, release build, Windows 11; it varies with window and GPU state).
 - **Safe closing**: closing a pane, tab or the window while a command runs asks first (Settings → Terminal → Confirm on close).
 - **Private history**: a command that starts with a space isn't saved to the history (like bash's `ignorespace`).
+- **Notify when done**: the taskbar flashes when a command of 10 s or more ends while Rayo is in the background.
 - **Crash log**: if Rayo ever crashes, the details go to `%APPDATA%\rayo\crash.log`. Attach it to the bug report.
 - **Session**: tabs, splits and each pane's folder come back when you reopen Rayo.
 

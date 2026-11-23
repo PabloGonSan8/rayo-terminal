@@ -90,8 +90,32 @@ impl Scanner {
     }
 }
 
+/// Random per-process token our marks start with (`ESC ] <nonce>;133;D;0 BEL`), so
+/// program output (a `cat` of a file with escape codes) can't fake a block end or cwd.
+/// Marks without it reach the terminal as an unknown OSC, which it ignores.
+pub fn nonce() -> &'static str {
+    static N: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    N.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        // RandomState is seeded from the OS RNG: no extra dependency for 64 random bits.
+        let h = std::collections::hash_map::RandomState::new().build_hasher();
+        format!("rayo{:016x}", h.finish())
+    })
+}
+
+/// Test helper: plain `ESC ]133;` / `ESC ]9;9;` marks with this process's nonce.
+#[cfg(test)]
+pub fn with_nonce(b: &[u8]) -> Vec<u8> {
+    let s = String::from_utf8_lossy(b);
+    let n = nonce();
+    s.replace("\x1b]133;", &format!("\x1b]{n};133;"))
+        .replace("\x1b]9;9;", &format!("\x1b]{n};9;9;"))
+        .into_bytes()
+}
+
 fn parse_mark(body: &[u8]) -> Option<Mark> {
     let body = std::str::from_utf8(body).ok()?;
+    let body = body.strip_prefix(nonce())?.strip_prefix(';')?;
     if let Some(cwd) = body.strip_prefix("9;9;") {
         return Some(Mark::Cwd(cwd.trim_matches('"').to_string()));
     }
@@ -132,13 +156,14 @@ fn find_terminator(b: &[u8]) -> Option<(usize, usize)> {
 const PS_INTEGRATION: &str = r#"
 Remove-Module PSReadLine -ErrorAction SilentlyContinue
 $global:__rayo_e0 = $null
+$global:__rayo_n = '__RAYO_NONCE__'
 function global:prompt {
   $c = 0
   if ($global:LASTEXITCODE) { $c = $global:LASTEXITCODE }
   elseif ($global:Error.Count -gt 0 -and -not [object]::ReferenceEquals($global:Error[0], $global:__rayo_e0)) { $c = 1 }
   $global:__rayo_e0 = $global:Error[0]
-  $e = [char]27; $b = [char]7
-  "$e]133;D;$c$b$e[2J$e[3J$e[H$e]9;9;`"$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)`"$b$e]133;B$b"
+  $e = [char]27; $b = [char]7; $n = '__RAYO_NONCE__'
+  "$e]$n;133;D;$c$b$e[2J$e[3J$e[H$e]$n;9;9;`"$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)`"$b$e]$n;133;B$b"
 }
 "#;
 
@@ -154,7 +179,7 @@ pub fn integration_args() -> Vec<String> {
     vec![
         "-NoExit".into(),
         "-EncodedCommand".into(),
-        b64_utf16(PS_INTEGRATION),
+        b64_utf16(&PS_INTEGRATION.replace("__RAYO_NONCE__", nonce())),
     ]
 }
 
@@ -167,7 +192,7 @@ fn b64_utf16(s: &str) -> String {
 pub fn wrap_command(cmd: &str) -> String {
     let b64 = base64::engine::general_purpose::STANDARD.encode(cmd.as_bytes());
     format!(
-        "$global:LASTEXITCODE=0;$global:__rayo_e0=$global:Error[0];[Console]::Write([char]27+']133;C'+[char]7);. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64}'))))\r"
+        "$global:LASTEXITCODE=0;$global:__rayo_e0=$global:Error[0];[Console]::Write([char]27+']'+$global:__rayo_n+';133;C'+[char]7);. ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{b64}'))))\r"
     )
 }
 
@@ -582,9 +607,13 @@ mod tests {
     #[test]
     fn splits_marks_across_reads() {
         let mut s = Scanner::default();
-        let mut segs = s.feed(b"out\x1b]13");
-        segs.extend(s.feed(b"3;D;7\x07\x1b[2J\x1b]9;9;\"C:\\x\"\x07\x1b]133;B\x1b"));
-        segs.extend(s.feed(b"\\\x1b]0;title\x07"));
+        let all = with_nonce(b"out\x1b]133;D;7\x07\x1b[2J\x1b]9;9;\"C:\\x\"\x07\x1b]133;B\x1b\\\x1b]0;title\x07");
+        // Split inside the nonce and inside the ESC \ terminator.
+        let (a, rest) = all.split_at(8);
+        let (b, c) = rest.split_at(rest.len() - 12);
+        let mut segs = s.feed(a);
+        segs.extend(s.feed(b));
+        segs.extend(s.feed(c));
         assert_eq!(
             segs,
             vec![
@@ -599,9 +628,17 @@ mod tests {
     }
 
     #[test]
+    fn marks_without_nonce_are_plain_output() {
+        // What `cat evil.txt` could print: must not end the block or move the cwd.
+        let fake = b"\x1b]133;D;0\x07\x1b]9;9;\"C:\\Windows\"\x07\x1b]rayo0000000000000000;133;B\x07";
+        let segs = Scanner::default().feed(fake);
+        assert_eq!(segs, vec![Seg::Bytes(fake.to_vec())]);
+    }
+
+    #[test]
     fn wrapped_command_roundtrips_base64() {
         let w = wrap_command("echo 'a b'\nls");
-        let b64 = w.split('\'').nth(3).unwrap();
+        let b64 = w.split('\'').nth(5).unwrap();
         let dec = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .unwrap();
